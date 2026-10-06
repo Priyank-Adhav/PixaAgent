@@ -245,11 +245,11 @@
 
   function renderChangeSet(files) {
     const pending = files.filter((f) => f.status === "pending");
-    changesetEl.classList.toggle("hidden", files.length === 0);
+    changesetEl.classList.toggle("hidden", pending.length === 0);
     changesetFiles.innerHTML = "";
     $("apply-all").classList.toggle("hidden", pending.length === 0);
     $("reject-all").classList.toggle("hidden", pending.length === 0);
-    for (const f of files) {
+    for (const f of pending) {
       const row = document.createElement("div");
       row.className = "cs-row cs-" + f.status;
       const actions =
