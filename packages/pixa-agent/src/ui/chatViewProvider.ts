@@ -280,11 +280,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
 
   private transcript(): { role: string; text: string }[] {
     return this.loop.history
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || (m.toolCalls && m.toolCalls.length > 0)))
       .map((m) => ({
         role: m.role,
-        // Hide bulky attached-file blocks from the replayed view.
-        text: m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]"),
+        text: m.content.trim()
+          ? m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]")
+          : `*(used ${m.toolCalls?.length} tool${m.toolCalls?.length === 1 ? "" : "s"})*`,
       }));
   }
 
@@ -501,17 +502,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
         return;
       }
       if (action === "apply-all") {
+        let hasError = false;
         for (const change of this.changeSet.list()) {
-          if (change.status === "pending") await this.applyChange(change.path);
+          if (change.status === "pending") {
+            try {
+              await this.applyChange(change.path);
+            } catch (e) {
+              hasError = true;
+              this.post({ type: "error", message: `Error applying ${change.path}: ${(e as Error).message}` } as any);
+            }
+          }
         }
+        if (!hasError) this.post({ type: "status", text: "Applied all pending changes." } as any);
       } else if (action === "reject-all") {
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") this.changeSet.markRejected(change.path);
         }
+        this.post({ type: "status", text: "Rejected all pending changes." } as any);
       } else if (relPath) {
-        if (action === "apply") await this.applyChange(relPath);
-        if (action === "reject") this.changeSet.markRejected(relPath);
-        if (action === "revert") await this.revertChange(relPath);
+        if (action === "apply") {
+          await this.applyChange(relPath);
+          this.post({ type: "status", text: `Applied changes to ${relPath}` } as any);
+        }
+        if (action === "reject") {
+          this.changeSet.markRejected(relPath);
+          this.post({ type: "status", text: `Rejected changes to ${relPath}` } as any);
+        }
+        if (action === "revert") {
+          await this.revertChange(relPath);
+          this.post({ type: "status", text: `Reverted changes to ${relPath}` } as any);
+        }
       }
       this.postChangeSet();
     } catch (e) {
