@@ -36,6 +36,11 @@ export function pruneHistory(messages: ChatMessage[], budgetTokens: number): Cha
   let start = 0;
   while (start < lastUserIdx && historyTokens(result.slice(start)) > budgetTokens) {
     start++;
+    // If we dropped an assistant message with tool calls, we must also drop its tool results
+    // to avoid sending orphaned tool messages to the API (which causes 400 errors).
+    while (start < lastUserIdx && result[start].role === "tool") {
+      start++;
+    }
   }
   return result.slice(start);
 }
