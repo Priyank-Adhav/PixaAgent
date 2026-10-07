@@ -92,6 +92,37 @@ describe("pruneHistory", () => {
     expect(total).toBeLessThanOrEqual(600);
   });
 
+  it("drops a whole old turn instead of keeping an orphaned assistant reply", () => {
+    const history = [
+      msg("user", "old request"),
+      msg("assistant", "old answer ".repeat(500)),
+      msg("user", "current request"),
+      msg("assistant", "current answer"),
+    ];
+
+    const pruned = pruneHistory(history, 200);
+
+    expect(pruned.map((m) => m.content)).toEqual(["current request", "current answer"]);
+    expect(pruned[0].role).toBe("user");
+  });
+
+  it("keeps a retained tool-calling turn intact", () => {
+    const history = [
+      msg("user", "old request"),
+      msg("assistant", "old answer ".repeat(500)),
+      msg("user", "inspect the file"),
+      msg("assistant", "", { toolCalls: [{ id: "call-1", name: "read_file", arguments: "{}" }] }),
+      msg("tool", "file contents", { toolCallId: "call-1", toolName: "read_file" }),
+      msg("assistant", "the file exports parseConfig"),
+    ];
+
+    const pruned = pruneHistory(history, 200);
+
+    expect(pruned.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+    expect(pruned[1].toolCalls?.[0]?.id).toBe("call-1");
+    expect(pruned[2].toolCallId).toBe("call-1");
+  });
+
   it("always keeps the last user message even if alone", () => {
     const history = [msg("user", "old"), msg("assistant", "old reply"), msg("user", "x".repeat(10000))];
     const pruned = pruneHistory(history, 100);
