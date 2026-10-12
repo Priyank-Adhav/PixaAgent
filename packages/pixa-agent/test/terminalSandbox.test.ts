@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { terminalTools } from "../src/tools/terminal";
+import { terminalTools, runShell } from "../src/tools/terminal";
 import type { ToolContext } from "../src/tools/types";
 
 /**
@@ -52,5 +52,25 @@ describe("run_command sandbox wiring", () => {
     // and because the user declined, nothing executed.
     expect(approvalAsked).toBe(true);
     expect(result).toMatch(/declined/i);
+  });
+
+  it("runShell resolves < 5s with code 42 when stdin is closed", async () => {
+    const start = Date.now();
+    const result = await runShell(
+      'node -e "process.stdin.on(\'end\',()=>process.exit(42));process.stdin.resume()"',
+      process.cwd(),
+      3_000
+    );
+    const duration = Date.now() - start;
+    expect(duration).toBeLessThan(5000);
+    expect(result.code).toBe(42);
+  });
+
+  it("annotates tool result with warning when an interactive command is detected", async () => {
+    const result = await runCommand.execute(
+      { command: "pause" },
+      ctx({ approvals: { requestApproval: async () => true } })
+    );
+    expect(result).toMatch(/Warning: Command appeared interactive/i);
   });
 });

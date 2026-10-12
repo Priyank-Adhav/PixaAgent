@@ -101,3 +101,24 @@ export function evaluateCommand(command: string): PolicyResult {
     securityLogger.log("evaluateCommand", result.verdict, { command: trimmed, reason: result.reason });
     return result;
 }
+
+/**
+ * Heuristic detection for commands that typically block waiting for stdin.
+ * Note: This list is intentionally short and not exhaustive.
+ */
+const INTERACTIVE_PATTERNS: { name: string; regex: RegExp }[] = [
+    { name: "read/pause", regex: /(?:^|[;&|]\s*)\b(read|pause)\b/i },
+    { name: "interactive-flag", regex: /(?:^|[;&|]\s*)(?:python[0-9.]*|bash|sh|zsh|git\s+\w+)\s+(?:.*?\s+)?(?:-[a-zA-Z]*i\b|--interactive\b)/i },
+    { name: "npm-init", regex: /(?:^|[;&|]\s*)\bnpm\s+init(?!\s+(?:-[a-zA-Z]*y|--yes))\b/i },
+];
+
+export function detectInteractive(command: string): string | null {
+    const trimmed = command.trim();
+    if (!trimmed) return null;
+    for (const { name, regex } of INTERACTIVE_PATTERNS) {
+        if (regex.test(trimmed)) {
+            return name;
+        }
+    }
+    return null;
+}
