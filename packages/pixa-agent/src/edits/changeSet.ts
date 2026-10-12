@@ -85,6 +85,66 @@ export class ChangeSet {
       if (c.status !== "pending") this.changes.delete(path);
     }
   }
+
+  checkFreshness(path: string, currentDiskContent: string | null): FreshnessVerdict {
+    const change = this.changes.get(path);
+    if (!change) {
+      return { fresh: false, reason: "missing", message: `No staged change found for ${path}.` };
+    }
+    return checkChangeFreshness(change, currentDiskContent);
+  }
+}
+
+export type FreshnessReason = "changed" | "missing" | "created-conflict";
+
+export type FreshnessVerdict =
+  | { fresh: true }
+  | { fresh: false; reason: FreshnessReason; message: string };
+
+/**
+ * Normalizes text for staleness comparison:
+ * 1. Strips leading UTF-8 Byte Order Mark (\uFEFF) if present.
+ * 2. Normalizes line endings (CRLF \r\n and standalone CR \r) to LF (\n).
+ */
+export function normalizeForComparison(text: string): string {
+  return text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+}
+
+export function checkChangeFreshness(
+  change: FileChange,
+  currentDiskContent: string | null
+): FreshnessVerdict {
+  if (change.originalContent === null) {
+    if (currentDiskContent !== null) {
+      return {
+        fresh: false,
+        reason: "created-conflict",
+        message: "File was created on disk since new file was staged.",
+      };
+    }
+    return { fresh: true };
+  }
+
+  if (currentDiskContent === null) {
+    return {
+      fresh: false,
+      reason: "missing",
+      message: "File was deleted on disk since edit was staged.",
+    };
+  }
+
+  const normOriginal = normalizeForComparison(change.originalContent);
+  const normDisk = normalizeForComparison(currentDiskContent);
+
+  if (normDisk !== normOriginal) {
+    return {
+      fresh: false,
+      reason: "changed",
+      message: "File has been modified on disk since edit was staged.",
+    };
+  }
+
+  return { fresh: true };
 }
 
 function countOccurrences(haystack: string, needle: string): number {
