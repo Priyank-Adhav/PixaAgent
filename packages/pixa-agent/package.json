@@ -73,6 +73,11 @@
           "default": "nemotron-free",
           "description": "Model id used by default. Built-in ids come from models.json; custom ones are \"provider:model\" (e.g. \"ollama:llama3.1\")."
         },
+        "pixa.semanticSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable local semantic search. Builds an embedding index in .pixa/ for concept-based code search. Requires optional embedding dependencies."
+        },
         "pixa.providers": {
           "type": "object",
           "default": {},
