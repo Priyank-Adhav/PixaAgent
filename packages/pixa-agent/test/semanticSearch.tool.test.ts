@@ -123,4 +123,25 @@ describe("semantic_search tool", () => {
     expect(output).toContain("search_workspace");
     expect(output).toContain("empty or still building");
   });
+
+  it("returns disabled message when index lacks query method", async () => {
+    const disabledCtx: ToolContext = {
+      ...ctx,
+      index: {
+        getProjectMap: () => Promise.resolve(""),
+        getFileOutline: () => Promise.resolve(""),
+        refresh: () => {},
+      },
+    };
+
+    const output = await tools.run(
+      "semantic_search",
+      JSON.stringify({ query: "where is authentication handled" }),
+      disabledCtx
+    );
+
+    expect(output).toBe(
+      "Semantic search is disabled for this workspace. Enable 'pixa.semanticSearch.enabled' and reload to use it."
+    );
+  });
 });

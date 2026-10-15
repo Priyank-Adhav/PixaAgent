@@ -60,6 +60,38 @@ function chunkMetaFromChunk(chunk: Chunk): ChunkMetadata {
 }
 
 /**
+ * Ensures .pixa/ is added to .gitignore.
+ * Returns true if .gitignore was mutated, false if it was already present or disabled.
+ */
+export function ensureGitignored(
+  workspaceRoot: string,
+  options?: { enabled?: boolean }
+): boolean {
+  if (options?.enabled === false) return false;
+  const gitignorePath = path.join(workspaceRoot, ".gitignore");
+  const entry = ".pixa/";
+  try {
+    if (!fs.existsSync(gitignorePath)) {
+      fs.writeFileSync(gitignorePath, `${entry}\n`);
+      return true;
+    }
+    const existing = fs.readFileSync(gitignorePath, "utf8");
+    const alreadyPresent = existing
+      .split(/\r?\n/)
+      .some((line) => line.trim() === entry || line.trim() === ".pixa");
+    if (!alreadyPresent) {
+      const needsNewline = existing.length > 0 && !existing.endsWith("\n");
+      fs.appendFileSync(gitignorePath, `${needsNewline ? "\n" : ""}${entry}\n`);
+      return true;
+    }
+    return false;
+  } catch {
+    // Non-fatal — worst case the .pixa folder shows up as untracked in git status.
+    return false;
+  }
+}
+
+/**
  * Thin wrapper around Vectra's LocalIndex. Nothing outside this file should
  * import from "vectra" directly.
  */
@@ -78,7 +110,6 @@ export class VectorStore {
 
   private async init(): Promise<void> {
     fs.mkdirSync(this.folderPath, { recursive: true });
-    this.ensureGitignored();
     this.writeReadmeIfMissing();
 
     if (!(await this.index.isIndexCreated())) {
@@ -104,27 +135,6 @@ export class VectorStore {
       fs.mkdirSync(this.folderPath, { recursive: true });
       this.index = new LocalIndex(this.folderPath);
       await this.index.createIndex();
-    }
-  }
-
-  private ensureGitignored(): void {
-    const gitignorePath = path.join(this.workspaceRoot, ".gitignore");
-    const entry = ".pixa/";
-    try {
-      if (!fs.existsSync(gitignorePath)) {
-        fs.writeFileSync(gitignorePath, `${entry}\n`);
-        return;
-      }
-      const existing = fs.readFileSync(gitignorePath, "utf8");
-      const alreadyPresent = existing
-        .split(/\r?\n/)
-        .some((line) => line.trim() === entry || line.trim() === ".pixa");
-      if (!alreadyPresent) {
-        const needsNewline = existing.length > 0 && !existing.endsWith("\n");
-        fs.appendFileSync(gitignorePath, `${needsNewline ? "\n" : ""}${entry}\n`);
-      }
-    } catch {
-      // Non-fatal — worst case the .pixa folder shows up as untracked in git status.
     }
   }
 

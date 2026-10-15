@@ -12,7 +12,9 @@ import {
 import { ToolRegistry, registerBuiltinTools } from "./tools/registry";
 import { ChangeSet } from "./edits/changeSet";
 import { EmbeddingIndex } from "./indexer/embeddingIndex";
-import { VectorStore } from "./indexer/vectorStore";
+import { VectorStore, ensureGitignored } from "./indexer/vectorStore";
+import { WorkspaceIndexer } from "./indexer/workspaceIndexer";
+import type { RepoIndex } from "./indexer/types";
 import { indexWorkspaceWithProgress, registerIncrementalIndexing } from "./indexer/indexingPipeline";
 import { runAndSaveBenchmark } from "./indexer/recallBenchmark";
 import { DiffPreview } from "./ui/diffPreview";
@@ -61,12 +63,12 @@ function registerUserProviders(
   return models;
 }
 
-async function hidePixaFolderFromExplorer(workspaceRoot: string): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.find((f) => f.uri.fsPath === workspaceRoot);
-  const config = vscode.workspace.getConfiguration("files", folder?.uri);
-  const current = config.get<Record<string, boolean>>("exclude") ?? {};
-  if (current[".pixa"] === true) return;
-  await config.update("exclude", { ...current, ".pixa": true }, vscode.ConfigurationTarget.WorkspaceFolder);
+function isSemanticSearchEnabled(workspaceRoot: string): boolean {
+  const configured = vscode.workspace
+    .getConfiguration("pixa")
+    .get<boolean>("semanticSearch.enabled", false);
+  if (configured) return true;
+  return fs.existsSync(path.join(workspaceRoot, ".pixa", "index"));
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -136,7 +138,6 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   log(`Activating for workspace: ${workspaceRoot}`);
-  void hidePixaFolderFromExplorer(workspaceRoot);
 
   const modelsPath = path.join(context.extensionPath, "dist", "models.json");
   const bundledModels = loadModels(fs.readFileSync(modelsPath, "utf8"));
@@ -166,102 +167,156 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const changeSet = new ChangeSet();
 
-  const vectorStore = new VectorStore(workspaceRoot);
-  const index = new EmbeddingIndex(workspaceRoot, vectorStore);
+  const semanticEnabled = isSemanticSearchEnabled(workspaceRoot);
+  let index: RepoIndex;
 
-  log("VectorStore constructed — .pixa/index/ should now exist on disk.");
+  if (semanticEnabled) {
+    const mutated = ensureGitignored(workspaceRoot, { enabled: true });
+    if (mutated) {
+      void vscode.window.showInformationMessage("Pixa: added .pixa/ to .gitignore.");
+    }
 
-  const runInitialIndex = async () => {
-    statusBar.text = "$(sync~spin) Pixa: indexing…";
-    statusBar.tooltip = "Pixa is building its semantic search index for this workspace.";
-    statusBar.show();
-    try {
-      const result = await indexWorkspaceWithProgress(workspaceRoot, vectorStore);
-      log(
-        `Initial index complete: ${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written.`
+    const vectorStore = new VectorStore(workspaceRoot);
+    index = new EmbeddingIndex(workspaceRoot, vectorStore);
+    log("VectorStore constructed — .pixa/index/ should now exist on disk.");
+
+    const runInitialIndex = async () => {
+      statusBar.text = "$(sync~spin) Pixa: indexing…";
+      statusBar.tooltip = "Pixa is building its semantic search index for this workspace.";
+      statusBar.show();
+      try {
+        const result = await indexWorkspaceWithProgress(workspaceRoot, vectorStore);
+        log(
+          `Initial index complete: ${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written.`
+        );
+        statusBar.text = `$(check) Pixa: index ready (${result.filesIndexed} indexed, ${result.filesSkipped} skipped)`;
+        setTimeout(() => statusBar.hide(), 5000);
+      } catch (err: any) {
+        log(`Initial index FAILED: ${err?.stack ?? err}`);
+        // @huggingface/transformers ships unbundled (it's 150MB+ with a native
+        // binary) — every fresh install hits this until the user opts in, so
+        // it's expected, not a bug. Don't alarm users with a red popup for it.
+        if (isMissingOptionalEmbeddingDep(err)) {
+          statusBar.text = "$(circle-slash) Pixa: semantic search off";
+          statusBar.tooltip =
+            "Optional local embedding model isn't installed. Chat and editing work normally. " +
+            "See the \"Pixa Index\" output channel for setup steps.";
+          setTimeout(() => statusBar.hide(), 8000);
+        } else {
+          statusBar.text = "$(error) Pixa: indexing failed";
+          statusBar.tooltip = "See the \"Pixa Index\" output channel for details.";
+          void vscode.window.showErrorMessage(
+            `Pixa: initial semantic index failed — see "Pixa Index" output channel for details. (${err?.message ?? err})`
+          );
+        }
+      }
+    };
+    void runInitialIndex();
+
+    registerIncrementalIndexing(context, workspaceRoot, vectorStore);
+
+    context.subscriptions.push(
+      vscode.commands.registerCommand("pixa.rebuildSemanticIndex", async () => {
+        log("Manual rebuild triggered.");
+        await runInitialIndex();
+        void vscode.window.showInformationMessage("Pixa: semantic index rebuilt.");
+      }),
+      vscode.commands.registerCommand("pixa.runRecallBenchmark", async () => {
+        await runAndSaveBenchmark(workspaceRoot, vectorStore);
+      })
+    );
+
+    // TEMPORARY DEBUG COMMAND — remove once confirmed working. Bypasses the
+    // LLM entirely, talks straight to the vector store: no cost, no rate limit.
+    context.subscriptions.push(
+      vscode.commands.registerCommand("pixa.debugSemanticSearch", async () => {
+        const testQuery = await vscode.window.showInputBox({
+          prompt: "Test query for semantic search (debug, bypasses the LLM)",
+          value: "retry backoff exponential wait",
+        });
+        if (!testQuery) return;
+
+        log(`[DEBUG] Running test query: "${testQuery}"`);
+        try {
+          const chunkCount = await vectorStore.size();
+          log(`[DEBUG] Total chunks currently in index: ${chunkCount}`);
+          if (chunkCount === 0) {
+            log(`[DEBUG] Index is EMPTY. Indexing may still be running, or failed. Check the log above for "Initial index complete" or "FAILED".`);
+            void vscode.window.showWarningMessage("Pixa debug: index is empty (0 chunks). See \"Pixa Index\" output.");
+            return;
+          }
+
+          const start = Date.now();
+          const diagnostics = await vectorStore.queryWithDiagnostics(testQuery, 5);
+          const ms = Date.now() - start;
+          const results = diagnostics.results;
+
+          log(`[DEBUG] Model responded in ${ms}ms. ${results.length} result(s) above the ${diagnostics.threshold} relevance threshold.`);
+          if (results.length === 0) {
+            log(`[DEBUG] Zero results above threshold. Raw top candidates before threshold:`);
+            for (const r of diagnostics.rawCandidates) {
+              log(`[DEBUG]   raw score=${r.score.toFixed(3)}  ${r.filePath}  (${r.symbolName ?? "unnamed"})`);
+            }
+            if (diagnostics.rawCandidates.length === 0) {
+              log(`[DEBUG] No candidates at all — index may be empty or query embedding failed.`);
+            }
+          }
+          for (const r of results) {
+            log(`[DEBUG]   score=${r.score.toFixed(3)}  ${r.filePath}:${r.startLine + 1}-${r.endLine + 1}  (${r.symbolName ?? "unnamed"})`);
+          }
+
+          void vscode.window.showInformationMessage(
+            `Pixa debug: responded in ${ms}ms, ${results.length} result(s), ${chunkCount} chunks indexed. See "Pixa Index" output for details.`
+          );
+        } catch (err: any) {
+          log(`[DEBUG] Semantic search THREW: ${err?.stack ?? err}`);
+          void vscode.window.showErrorMessage(`Pixa debug: query failed — ${err?.message ?? err}. See output channel.`);
+        }
+      })
+    );
+  } else {
+    index = new WorkspaceIndexer(workspaceRoot);
+    log("Semantic search disabled for this workspace; skipping VectorStore initialization.");
+
+    const promptReloadToEnable = async () => {
+      const choice = await vscode.window.showInformationMessage(
+        "Pixa: Reload window to enable semantic search",
+        "Reload"
       );
-      statusBar.text = `$(check) Pixa: index ready (${result.filesIndexed} indexed, ${result.filesSkipped} skipped)`;
-      setTimeout(() => statusBar.hide(), 5000);
-    } catch (err: any) {
-      log(`Initial index FAILED: ${err?.stack ?? err}`);
-      // @huggingface/transformers ships unbundled (it's 150MB+ with a native
-      // binary) — every fresh install hits this until the user opts in, so
-      // it's expected, not a bug. Don't alarm users with a red popup for it.
-      if (isMissingOptionalEmbeddingDep(err)) {
-        statusBar.text = "$(circle-slash) Pixa: semantic search off";
-        statusBar.tooltip =
-          "Optional local embedding model isn't installed. Chat and editing work normally. " +
-          "See the \"Pixa Index\" output channel for setup steps.";
-        setTimeout(() => statusBar.hide(), 8000);
+      if (choice === "Reload") {
+        await vscode.workspace
+          .getConfiguration("pixa")
+          .update("semanticSearch.enabled", true, vscode.ConfigurationTarget.Global);
+        await vscode.commands.executeCommand("workbench.action.reloadWindow");
       } else {
-        statusBar.text = "$(error) Pixa: indexing failed";
-        statusBar.tooltip = "See the \"Pixa Index\" output channel for details.";
-        void vscode.window.showErrorMessage(
-          `Pixa: initial semantic index failed — see "Pixa Index" output channel for details. (${err?.message ?? err})`
+        void vscode.window.showInformationMessage(
+          "Pixa: semantic search is disabled. Enable 'pixa.semanticSearch.enabled' and reload to use this command."
         );
       }
-    }
-  };
-  void runInitialIndex();
+    };
 
-  registerIncrementalIndexing(context, workspaceRoot, vectorStore);
+    context.subscriptions.push(
+      vscode.commands.registerCommand("pixa.rebuildSemanticIndex", promptReloadToEnable),
+      vscode.commands.registerCommand("pixa.runRecallBenchmark", promptReloadToEnable),
+      vscode.commands.registerCommand("pixa.debugSemanticSearch", promptReloadToEnable)
+    );
+  }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("pixa.rebuildSemanticIndex", async () => {
-      log("Manual rebuild triggered.");
-      await runInitialIndex();
-      void vscode.window.showInformationMessage("Pixa: semantic index rebuilt.");
-    }),
-    vscode.commands.registerCommand("pixa.runRecallBenchmark", async () => {
-      await runAndSaveBenchmark(workspaceRoot, vectorStore);
-    })
-  );
-
-  // TEMPORARY DEBUG COMMAND — remove once confirmed working. Bypasses the
-  // LLM entirely, talks straight to the vector store: no cost, no rate limit.
-  context.subscriptions.push(
-    vscode.commands.registerCommand("pixa.debugSemanticSearch", async () => {
-      const testQuery = await vscode.window.showInputBox({
-        prompt: "Test query for semantic search (debug, bypasses the LLM)",
-        value: "retry backoff exponential wait",
-      });
-      if (!testQuery) return;
-
-      log(`[DEBUG] Running test query: "${testQuery}"`);
-      try {
-        const chunkCount = await vectorStore.size();
-        log(`[DEBUG] Total chunks currently in index: ${chunkCount}`);
-        if (chunkCount === 0) {
-          log(`[DEBUG] Index is EMPTY. Indexing may still be running, or failed. Check the log above for "Initial index complete" or "FAILED".`);
-          void vscode.window.showWarningMessage("Pixa debug: index is empty (0 chunks). See \"Pixa Index\" output.");
-          return;
-        }
-
-        const start = Date.now();
-        const diagnostics = await vectorStore.queryWithDiagnostics(testQuery, 5);
-        const ms = Date.now() - start;
-        const results = diagnostics.results;
-
-        log(`[DEBUG] Model responded in ${ms}ms. ${results.length} result(s) above the ${diagnostics.threshold} relevance threshold.`);
-        if (results.length === 0) {
-          log(`[DEBUG] Zero results above threshold. Raw top candidates before threshold:`);
-          for (const r of diagnostics.rawCandidates) {
-            log(`[DEBUG]   raw score=${r.score.toFixed(3)}  ${r.filePath}  (${r.symbolName ?? "unnamed"})`);
-          }
-          if (diagnostics.rawCandidates.length === 0) {
-            log(`[DEBUG] No candidates at all — index may be empty or query embedding failed.`);
+    vscode.workspace.onDidChangeConfiguration(async (e) => {
+      if (e.affectsConfiguration("pixa.semanticSearch.enabled")) {
+        const enabled = vscode.workspace
+          .getConfiguration("pixa")
+          .get<boolean>("semanticSearch.enabled", false);
+        if (enabled && !semanticEnabled) {
+          const choice = await vscode.window.showInformationMessage(
+            "Pixa: Reload window to enable semantic search",
+            "Reload"
+          );
+          if (choice === "Reload") {
+            await vscode.commands.executeCommand("workbench.action.reloadWindow");
           }
         }
-        for (const r of results) {
-          log(`[DEBUG]   score=${r.score.toFixed(3)}  ${r.filePath}:${r.startLine + 1}-${r.endLine + 1}  (${r.symbolName ?? "unnamed"})`);
-        }
-
-        void vscode.window.showInformationMessage(
-          `Pixa debug: responded in ${ms}ms, ${results.length} result(s), ${chunkCount} chunks indexed. See "Pixa Index" output for details.`
-        );
-      } catch (err: any) {
-        log(`[DEBUG] Semantic search THREW: ${err?.stack ?? err}`);
-        void vscode.window.showErrorMessage(`Pixa debug: query failed — ${err?.message ?? err}. See output channel.`);
       }
     })
   );

@@ -37,11 +37,9 @@ describe("VectorStore", { timeout: 120000 }, () => {
     // best-effort cleanup of temp dirs is left to the OS; not critical for CI
   });
 
-  it("creates the .pixa/index folder and adds .pixa/ to .gitignore", async () => {
+  it("creates the .pixa/index folder", async () => {
     await store.size(); // forces init to complete
     expect(fs.existsSync(path.join(workspaceRoot, ".pixa", "index"))).toBe(true);
-    const gitignore = fs.readFileSync(path.join(workspaceRoot, ".gitignore"), "utf8");
-    expect(gitignore).toContain(".pixa/");
   });
 
   it("does not duplicate on re-upsert of an unchanged chunk (idempotent by id)", async () => {
