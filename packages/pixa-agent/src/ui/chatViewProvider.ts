@@ -8,7 +8,7 @@ import { ToolRegistry } from "../tools/registry";
 import type { ApprovalService, ToolContext } from "../tools/types";
 import type { AgentEvent } from "../agent/events";
 import { AgentLoop } from "../agent/loop";
-import { ChangeSet } from "../edits/changeSet";
+import { ChangeSet, checkChangeFreshness } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
 import { resolveInWorkspace } from "../tools/paths";
@@ -501,15 +501,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
         return;
       }
       if (action === "apply-all") {
+        let appliedCount = 0;
+        const skipped: string[] = [];
         for (const change of this.changeSet.list()) {
-          if (change.status === "pending") await this.applyChange(change.path);
+          if (change.status === "pending") {
+            const res = await this.applyChange(change.path);
+            if (res.applied) {
+              appliedCount++;
+            } else if (res.reason) {
+              skipped.push(change.path);
+            }
+          }
+        }
+        if (skipped.length > 0) {
+          const summary = `Apply all: ${appliedCount} applied, ${skipped.length} skipped as stale (${skipped.join(", ")}).`;
+          this.post({ type: "error", message: summary });
+          void vscode.window.showWarningMessage(`Pixa: ${summary}`);
+        } else if (appliedCount > 0) {
+          this.post({ type: "status", text: `Applied all ${appliedCount} pending change(s).` });
         }
       } else if (action === "reject-all") {
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") this.changeSet.markRejected(change.path);
         }
       } else if (relPath) {
-        if (action === "apply") await this.applyChange(relPath);
+        if (action === "apply") {
+          const res = await this.applyChange(relPath);
+          if (!res.applied && res.reason) {
+            this.post({ type: "error", message: `Cannot apply ${relPath} — ${res.reason}. Staged change kept pending.` });
+          }
+        }
         if (action === "reject") this.changeSet.markRejected(relPath);
         if (action === "revert") await this.revertChange(relPath);
       }
@@ -534,13 +555,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     this.diffPreview.invalidate(relPath);
   }
 
-  private async applyChange(relPath: string): Promise<void> {
+  private async applyChange(relPath: string): Promise<{ applied: boolean; reason?: string }> {
     const change = this.changeSet.get(relPath);
-    if (!change || change.status !== "pending") return;
+    if (!change || change.status !== "pending") return { applied: false };
     const abs = resolveInWorkspace(this.workspaceRoot, relPath);
+
+    let diskContent: string | null = null;
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(abs));
+      diskContent = Buffer.from(bytes).toString("utf8");
+    } catch {
+      diskContent = null;
+    }
+
+    const freshness = checkChangeFreshness(change, diskContent);
+    if (!freshness.fresh) {
+      return { applied: false, reason: freshness.message };
+    }
+
     await vscode.workspace.fs.writeFile(vscode.Uri.file(abs), Buffer.from(change.newContent, "utf8"));
     this.changeSet.markApplied(relPath);
     this.diffPreview.invalidate(relPath);
+    return { applied: true };
   }
 
   /** Resolve @path mentions against workspace files and append their contents. */
