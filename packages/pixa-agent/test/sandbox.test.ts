@@ -27,25 +27,74 @@ describe("evaluateCommand — deny list", () => {
     }
 });
 
-describe("evaluateCommand — allow list", () => {
-    const allowCases = [
+describe("evaluateCommand — low-risk list", () => {
+    const lowRiskCases = [
         "git status",
         "git log --oneline",
         "git diff HEAD~1",
+        "git branch",
+        "git branch -a",
+        "git remote -v",
         "ls -la",
         "cat package.json",
-        "npm test",
-        "npm run test",
+        "grep -rn TODO src",
         "node --version",
+        "npm ls",
         "echo hello",
     ];
 
-    for (const command of allowCases) {
-        it(`allows: ${JSON.stringify(command)}`, () => {
+    for (const command of lowRiskCases) {
+        it(`classifies as low-risk: ${JSON.stringify(command)}`, () => {
             const result = evaluateCommand(command);
-            expect(result.verdict).toBe("allow");
+            expect(result.verdict).toBe("low-risk");
         });
     }
+
+    it("low-risk is informational only — the reason says approval is still required", () => {
+        const result = evaluateCommand("git status");
+        expect(result.reason).toMatch(/still requires user approval/i);
+        expect(result.reason).not.toMatch(/auto/i);
+    });
+});
+
+describe("evaluateCommand — commands that look read-only but are not", () => {
+    // Each of these used to match a "safe" prefix. They must fall to confirm so
+    // the low-risk label (and the audit log) never overstates what they do.
+    const cases = [
+        "ls && rm -rf src",
+        "ls; rm notes.txt",
+        "cat a.txt | sh",
+        "echo x > src/index.ts",
+        "cat a.txt > b.txt",
+        "echo $(whoami)",
+        "echo `whoami`",
+        "ls\nrm notes.txt",
+        "find . -delete",
+        "find . -name '*.tmp' -exec rm {} ;",
+        "git branch -D main",
+        "git branch new-feature",
+        "git remote add evil https://example.com/r.git",
+        "git remote remove origin",
+        "git diff --output=patch.txt",
+        "rg --pre ./script.sh foo",
+        "npm test",
+        "npm run test",
+    ];
+
+    for (const command of cases) {
+        it(`falls to confirm: ${JSON.stringify(command)}`, () => {
+            expect(evaluateCommand(command).verdict).toBe("confirm");
+        });
+    }
+});
+
+describe("evaluateCommand — no verdict implies auto-run", () => {
+    it("never returns the old \"allow\" verdict", () => {
+        const samples = ["git status", "ls", "echo hi", "npm install", "rm -rf /", ""];
+        for (const command of samples) {
+            expect(evaluateCommand(command).verdict).not.toBe("allow");
+        }
+    });
 });
 
 describe("evaluateCommand — confirm (default) tier", () => {
