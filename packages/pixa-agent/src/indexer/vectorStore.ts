@@ -10,6 +10,12 @@ import { isIndexablePath } from "./indexablePaths";
 const RELEVANCE_THRESHOLD = 0.12;
 const OVERFETCH_MULTIPLIER = 5;
 const OVERFETCH_MIN = 25;
+const YIELD_EVERY_ITEMS = 200;
+
+/** Lets timers and I/O callbacks run (await on a resolved promise does not). */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 export interface QueryResult {
   filePath: string;
@@ -101,6 +107,13 @@ export class VectorStore {
   /** filePath -> set of chunk ids currently stored for that file. Rebuilt from disk on load. */
   private fileToIds = new Map<string, Set<string>>();
   private ready: Promise<void>;
+  /**
+   * Vectra allows one beginUpdate() at a time and throws "Update already in
+   * progress" otherwise. Initial indexing, the rebuild command, save-triggered
+   * re-indexing and delete events can all write concurrently, so every
+   * transaction is queued on this chain.
+   */
+  private writeChain: Promise<unknown> = Promise.resolve();
 
   constructor(private workspaceRoot: string) {
     this.folderPath = path.join(workspaceRoot, ".pixa", "index");
@@ -108,9 +121,29 @@ export class VectorStore {
     this.ready = this.init();
   }
 
+  private serializeWrite<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(fn, fn);
+    this.writeChain = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Runs fn inside one vectra transaction (one index.json rewrite), queued behind other writers. */
+  private transaction(fn: () => Promise<void>): Promise<void> {
+    return this.serializeWrite(async () => {
+      await this.index.beginUpdate();
+      try {
+        await fn();
+        await this.index.endUpdate();
+      } catch (e) {
+        this.index.cancelUpdate();
+        throw e;
+      }
+    });
+  }
+
   private async init(): Promise<void> {
-    fs.mkdirSync(this.folderPath, { recursive: true });
-    this.writeReadmeIfMissing();
+    await fs.promises.mkdir(this.folderPath, { recursive: true });
+    await this.writeReadmeIfMissing();
 
     if (!(await this.index.isIndexCreated())) {
       await this.index.createIndex();
@@ -131,8 +164,8 @@ export class VectorStore {
       // Index file is corrupt (truncated JSON, etc.) — wipe it and start fresh.
       // This can happen if the extension host was killed mid-write.
       this.fileToIds.clear();
-      fs.rmSync(this.folderPath, { recursive: true, force: true });
-      fs.mkdirSync(this.folderPath, { recursive: true });
+      await fs.promises.rm(this.folderPath, { recursive: true, force: true });
+      await fs.promises.mkdir(this.folderPath, { recursive: true });
       this.index = new LocalIndex(this.folderPath);
       await this.index.createIndex();
     }
@@ -141,11 +174,10 @@ export class VectorStore {
   /** Plain-English explanation dropped in .pixa/ so anyone who stumbles into
    * the folder via terminal/search understands what it is instead of
    * assuming something suspicious is happening to their codebase. */
-  private writeReadmeIfMissing(): void {
+  private async writeReadmeIfMissing(): Promise<void> {
     const readmePath = path.join(this.workspaceRoot, ".pixa", "README.md");
-    if (fs.existsSync(readmePath)) return;
     try {
-      fs.writeFileSync(
+      await fs.promises.writeFile(
         readmePath,
         [
           "# .pixa/",
@@ -163,10 +195,11 @@ export class VectorStore {
           "fragments, that's expected — it's index data, not a copy of your",
           "repository.",
           "",
-        ].join("\n")
+        ].join("\n"),
+        { flag: "wx" } // only if missing
       );
     } catch {
-      // Non-fatal
+      // Already exists, or non-fatal write failure
     }
   }
 
@@ -184,17 +217,15 @@ export class VectorStore {
 
     const vectors = await embed(chunks.map((c) => c.text));
 
-    await this.index.beginUpdate();
-    try {
+    await this.transaction(async () => {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
-        const vector = vectors[i];
 
         // upsertItem replaces in place if the id already exists — no
         // separate delete step needed (that was the old, slower pattern).
         await this.index.upsertItem({
           id: chunk.id,
-          vector,
+          vector: vectors[i],
           metadata: chunkMetaFromChunk(chunk),
         });
 
@@ -202,18 +233,49 @@ export class VectorStore {
         set.add(chunk.id);
         this.fileToIds.set(chunk.filePath, set);
       }
-      await this.index.endUpdate();
-    } catch (e) {
-      this.index.cancelUpdate();
-      throw e;
-    }
+    });
   }
 
   /**
-   * Deletes all chunks belonging to a file, also in a single transaction
-   * (was previously one deleteItem call — and therefore one disk rewrite —
-   * per chunk).
+   * Replaces the stored chunks of many files in ONE transaction (R-010).
+   *
+   * Vectra's endUpdate() re-serializes the whole index.json with a synchronous
+   * JSON.stringify, so one transaction per file made a cold index of N files
+   * cost N full rewrites of an ever-growing file — quadratic, and each rewrite
+   * blocks the extension host. Batching files cuts that to N / batch size.
+   *
+   * Each file's previous chunk ids are dropped first, so chunks whose line
+   * range changed don't linger as stale entries. An entry with no chunks just
+   * deletes that file from the index.
    */
+  async replaceFilesChunks(files: { relPath: string; chunks: Chunk[] }[]): Promise<void> {
+    await this.ready;
+    if (files.length === 0) return;
+
+    const chunks = files.flatMap((f) => f.chunks);
+    // Embedding runs outside the write queue so it can overlap other writers.
+    const vectors = await embed(chunks.map((c) => c.text));
+
+    await this.transaction(async () => {
+      const stale = new Set<string>();
+      for (const f of files) {
+        for (const id of this.fileToIds.get(f.relPath) ?? []) stale.add(id);
+      }
+      await this.index.deleteItems(stale);
+
+      for (let i = 0; i < chunks.length; i++) {
+        await this.index.upsertItem({ id: chunks[i].id, vector: vectors[i], metadata: chunkMetaFromChunk(chunks[i]) });
+        // Each upsert is a linear scan; give the event loop a turn now and then.
+        if (i % YIELD_EVERY_ITEMS === YIELD_EVERY_ITEMS - 1) await yieldToEventLoop();
+      }
+    });
+
+    for (const f of files) {
+      if (f.chunks.length === 0) this.fileToIds.delete(f.relPath);
+      else this.fileToIds.set(f.relPath, new Set(f.chunks.map((c) => c.id)));
+    }
+  }
+
   /** Remove indexed chunks for paths that should never be embedded (e.g. stale .pixa/ data). */
   async purgeNonIndexableFiles(): Promise<number> {
     await this.ready;
@@ -232,26 +294,17 @@ export class VectorStore {
     const ids = this.fileToIds.get(relPath);
     if (!ids || ids.size === 0) return;
 
-    await this.index.beginUpdate();
-    try {
-      for (const id of ids) {
-        await this.index.deleteItem(id);
-      }
-      await this.index.endUpdate();
-    } catch (e) {
-      this.index.cancelUpdate();
-      throw e;
-    }
+    await this.transaction(() => this.index.deleteItems(ids));
     this.fileToIds.delete(relPath);
   }
 
   /** Reads the actual current text for a chunk straight from disk, since we
    * no longer duplicate it into the index. Returns "" if the file no longer
    * exists or the line range is out of bounds. */
-  private readTextForChunk(filePath: string, startLine: number, endLine: number): string {
+  private async readTextForChunk(filePath: string, startLine: number, endLine: number): Promise<string> {
     try {
       const abs = path.join(this.workspaceRoot, filePath);
-      const content = fs.readFileSync(abs, "utf8");
+      const content = await fs.promises.readFile(abs, "utf8");
       const lines = content.split(/\r?\n/);
       return lines.slice(startLine, endLine + 1).join("\n");
     } catch {
@@ -292,7 +345,7 @@ export class VectorStore {
         endLine: meta.endLine,
         symbolName: meta.symbolName || null,
         symbolKind: meta.symbolKind || null,
-        text: this.readTextForChunk(meta.filePath, meta.startLine, meta.endLine),
+        text: await this.readTextForChunk(meta.filePath, meta.startLine, meta.endLine),
         score: r.score,
       });
     }
