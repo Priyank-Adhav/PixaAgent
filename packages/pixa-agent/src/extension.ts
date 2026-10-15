@@ -16,6 +16,7 @@ import { VectorStore, ensureGitignored } from "./indexer/vectorStore";
 import { WorkspaceIndexer } from "./indexer/workspaceIndexer";
 import type { RepoIndex } from "./indexer/types";
 import { indexWorkspaceWithProgress, registerIncrementalIndexing } from "./indexer/indexingPipeline";
+import { formatIndexingMetrics } from "./indexer/indexingMetrics";
 import { runAndSaveBenchmark } from "./indexer/recallBenchmark";
 import { DiffPreview } from "./ui/diffPreview";
 import { ChatViewProvider } from "./ui/chatViewProvider";
@@ -187,7 +188,7 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         const result = await indexWorkspaceWithProgress(workspaceRoot, vectorStore);
         log(
-          `Initial index complete: ${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written.`
+          `Initial index complete: ${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written; ${formatIndexingMetrics(result.metrics)}.`
         );
         statusBar.text = `$(check) Pixa: index ready (${result.filesIndexed} indexed, ${result.filesSkipped} skipped)`;
         setTimeout(() => statusBar.hide(), 5000);

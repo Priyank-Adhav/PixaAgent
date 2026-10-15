@@ -6,6 +6,7 @@ import { chunkFile } from "./chunker";
 import type { VectorStore } from "./vectorStore";
 import { resolveInWorkspace } from "../tools/paths";
 import { redactSecrets } from "../security/redact";
+import { startIndexingMetrics, type IndexingMetrics } from "./indexingMetrics";
 
 /** Files larger than this are skipped entirely. */
 const MAX_FILE_SIZE_BYTES = 500 * 1024;
@@ -77,7 +78,29 @@ async function indexOneFile(
   return chunks.length;
 }
 
+export interface IndexWorkspaceResult {
+  filesIndexed: number;
+  filesSkipped: number;
+  chunksIndexed: number;
+  /** Duration and extension-host event-loop lag for the run (R-010). */
+  metrics: IndexingMetrics;
+}
+
 export async function indexWorkspace(
+  workspaceRoot: string,
+  vectorStore: VectorStore,
+  onProgress?: (message: string, fraction: number) => void
+): Promise<IndexWorkspaceResult> {
+  const recorder = startIndexingMetrics();
+  try {
+    const counts = await indexWorkspaceInner(workspaceRoot, vectorStore, onProgress);
+    return { ...counts, metrics: recorder.stop() };
+  } finally {
+    recorder.stop();
+  }
+}
+
+async function indexWorkspaceInner(
   workspaceRoot: string,
   vectorStore: VectorStore,
   onProgress?: (message: string, fraction: number) => void
@@ -151,7 +174,7 @@ export async function indexWorkspace(
 export async function indexWorkspaceWithProgress(
   workspaceRoot: string,
   vectorStore: VectorStore
-): Promise<{ filesIndexed: number; filesSkipped: number; chunksIndexed: number }> {
+): Promise<IndexWorkspaceResult> {
   return vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
