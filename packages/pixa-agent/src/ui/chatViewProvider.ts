@@ -17,8 +17,12 @@ import {
   formatAttachedFiles,
   normalizeMention,
   isTraversalMention,
+  pickMentionMatch,
+  MAX_AMBIGUOUS_CANDIDATES,
   type AttachedFile,
+  type AmbiguousMention,
 } from "../agent/mentions";
+import { EXCLUDE } from "../indexer/workspaceIndexer";
 import type { ChatMessage } from "../providers/types";
 import type { ProvidersConfig } from "../providers/config";
 import { validateProviderForm, parseModelsResponse, modelsEndpointUrl } from "../providers/providerForm";
@@ -555,6 +559,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     if (mentions.length === 0) return text;
     const attached: AttachedFile[] = [];
     const unresolved: string[] = [];
+    const ambiguous: AmbiguousMention[] = [];
+    // Shown to the user whenever the attached file isn't literally what they typed.
+    const notes: string[] = [];
     for (const mention of mentions) {
       try {
         // Mentions are jailed like every other agent file access: "@../x" must
@@ -565,27 +572,64 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
         }
         const norm = normalizeMention(mention);
         // Exact relative path first, then a suffix match anywhere in the workspace.
-        let uri: vscode.Uri | undefined;
-        const exact = vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, norm));
+        let rel: string | undefined;
         try {
-          await vscode.workspace.fs.stat(exact);
-          uri = exact;
+          await vscode.workspace.fs.stat(vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, norm)));
+          rel = norm;
         } catch {
-          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 1);
-          uri = found[0];
+          const found = await vscode.workspace.findFiles(`**/${norm}`, EXCLUDE, MAX_AMBIGUOUS_CANDIDATES + 1);
+          const candidates = found
+            .map((u) => path.relative(this.workspaceRoot, u.fsPath).split(path.sep).join("/"))
+            .filter((p) => p && !p.startsWith(".."));
+          const match = pickMentionMatch(norm, candidates);
+          if (match.kind === "unique") {
+            rel = match.path;
+          } else if (match.kind === "ambiguous") {
+            rel = await this.pickAmbiguousMention(mention, match.candidates, match.truncated);
+            if (!rel) {
+              ambiguous.push({ mention, candidates: match.candidates, truncated: match.truncated });
+              notes.push(`@${mention} matches ${match.candidates.length}${match.truncated ? "+" : ""} files — not attached; the agent will ask which one you meant.`);
+              continue;
+            }
+          }
         }
-        if (!uri) {
+        if (!rel) {
           unresolved.push(mention);
           continue;
         }
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        const rel = path.relative(this.workspaceRoot, uri.fsPath).split(path.sep).join("/");
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, rel)));
         attached.push({ path: rel, content: Buffer.from(bytes).toString("utf8") });
+        if (rel !== norm) notes.push(`Attached @${mention} → ${rel}`);
       } catch {
         unresolved.push(mention);
       }
     }
-    return text + formatAttachedFiles(attached, unresolved);
+    for (const note of notes) this.post({ type: "status", text: note });
+    return text + formatAttachedFiles(attached, unresolved, ambiguous);
+  }
+
+  /** Ask the user which duplicate a mention meant. Undefined if dismissed or the run is stopped. */
+  private async pickAmbiguousMention(
+    mention: string,
+    candidates: string[],
+    truncated: boolean
+  ): Promise<string | undefined> {
+    const cts = new vscode.CancellationTokenSource();
+    const onAbort = () => cts.cancel();
+    this.abort?.signal.addEventListener("abort", onAbort);
+    try {
+      return await vscode.window.showQuickPick(
+        candidates,
+        {
+          title: `@${mention} matches ${candidates.length}${truncated ? "+" : ""} files — which one should be attached?`,
+          placeHolder: truncated ? "Only the first matches are listed; type a longer path to narrow it down" : undefined,
+        },
+        cts.token
+      );
+    } finally {
+      this.abort?.signal.removeEventListener("abort", onAbort);
+      cts.dispose();
+    }
   }
 
   private postChangeSet(): void {
