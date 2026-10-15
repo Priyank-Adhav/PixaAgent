@@ -49,8 +49,9 @@ const runCommand: Tool = {
     const cwd = args.cwd ? resolveInWorkspace(ctx.workspaceRoot, args.cwd) : ctx.workspaceRoot;
     // Sandbox policy first: a known-destructive command is hard-blocked before
     // the user is even asked, so it can't be run by an over-eager Approve click.
-    // Every non-denied command still goes through the normal approval flow —
-    // the policy only ever *removes* the option to run, never adds an auto-run.
+    // Every non-denied command — "low-risk" included — still goes through the
+    // normal approval flow: the policy only ever *removes* the option to run,
+    // never adds an auto-run.
     const verdict = evaluateCommand(args.command);
     if (verdict.verdict === "deny") {
       return `Command blocked by Pixa's safety policy: ${verdict.reason} It was not run. Suggest a safer alternative.`;

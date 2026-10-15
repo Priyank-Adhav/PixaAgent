@@ -5,12 +5,16 @@
  * and reusable outside the extension host if needed. Classifies a raw shell
  * command string into one of three verdicts:
  *
- *   - "deny"    matches a known-destructive pattern — never executed, no
- *               approval prompt shown at all.
- *   - "allow"   matches a known-safe, read-only/informational pattern —
- *               runs without asking.
- *   - "confirm" anything else — falls through to the existing human
- *               approval flow (ctx.approvals.requestApproval).
+ *   - "deny"     matches a known-destructive pattern — never executed, no
+ *                approval prompt shown at all.
+ *   - "low-risk" a single read-only/informational command with no shell
+ *                chaining, redirection or substitution. Informational only:
+ *                it is recorded in the audit log but STILL requires approval.
+ *   - "confirm"  anything else — requires approval.
+ *
+ * Only "deny" changes behavior. Every non-denied command goes through the
+ * human approval flow (ctx.approvals.requestApproval) — run_command never
+ * auto-runs anything, whatever the verdict.
  *
  * This is regex-based classification, not a real shell parser. It catches
  * known-bad patterns and obvious safe commands; it does not guarantee
@@ -20,7 +24,7 @@
  * adversarial model.
  */
 
-export type CommandVerdict = "allow" | "deny" | "confirm";
+export type CommandVerdict = "low-risk" | "deny" | "confirm";
 
 export interface PolicyResult {
     verdict: CommandVerdict;
@@ -29,17 +33,27 @@ export interface PolicyResult {
 }
 
 /**
- * Read-only / informational commands considered safe enough to run without
- * asking every time. Checked only AFTER the deny list, so a deny pattern
- * always wins if a command somehow matches both lists.
+ * Read-only / informational commands, labelled "low-risk" in the audit log.
+ * Not an auto-run list — see the header. Checked only AFTER the deny list, so
+ * a deny pattern always wins if a command somehow matches both lists.
  */
-const SAFE_PREFIXES: { name: string; regex: RegExp }[] = [
-    { name: "git-readonly", regex: /^git\s+(status|log|diff|show|branch|remote(\s+-v)?|blame)\b/i },
-    { name: "fs-readonly", regex: /^(ls|dir|pwd|cat|head|tail|wc|find|grep|rg)\b/i },
-    { name: "npm-readonly", regex: /^npm\s+(test|run\s+test\b|list|ls|outdated|view)\b/i },
+const LOW_RISK_PATTERNS: { name: string; regex: RegExp }[] = [
+    { name: "git-readonly", regex: /^git\s+(status|log|diff|show|blame)\b/i },
+    { name: "git-branch-list", regex: /^git\s+branch(\s+(-a|-r|-v|-vv|--all|--remotes|--list))*\s*$/i },
+    { name: "git-remote-list", regex: /^git\s+remote(\s+-v)?\s*$/i },
+    { name: "fs-readonly", regex: /^(ls|dir|pwd|cat|head|tail|wc|grep|rg)\b/i },
+    { name: "npm-readonly", regex: /^npm\s+(list|ls|outdated|view)\b/i },
     { name: "version-probe", regex: /^(node|python3?|npm|git)\s+(--version|-v)$/i },
     { name: "echo", regex: /^echo\b/i },
 ];
+
+/**
+ * Anything that can chain, redirect or substitute turns a read-only prefix
+ * into an arbitrary command ("ls && rm -rf src", "echo x > file"), and a few
+ * flags make otherwise read-only tools write files or execute programs.
+ * Either disqualifies a command from "low-risk".
+ */
+const NOT_LOW_RISK = /[;&|<>`\r\n]|\$\(|\s--output\b|\s--pre\b/;
 
 /**
  * High-confidence destructive or workspace-escaping patterns. Auto-denied —
@@ -85,19 +99,21 @@ export function evaluateCommand(command: string): PolicyResult {
         }
     }
 
-    for (const { name, regex } of SAFE_PREFIXES) {
-        if (regex.test(trimmed)) {
-            const result: PolicyResult = {
-                verdict: "allow",
-                reason: "Read-only/informational command — auto-allowed.",
-                matchedRule: name,
-            };
-            securityLogger.log("evaluateCommand", result.verdict, { command: trimmed, reason: result.reason, rule: name });
-            return result;
+    if (!NOT_LOW_RISK.test(trimmed)) {
+        for (const { name, regex } of LOW_RISK_PATTERNS) {
+            if (regex.test(trimmed)) {
+                const result: PolicyResult = {
+                    verdict: "low-risk",
+                    reason: "Read-only/informational command — still requires user approval.",
+                    matchedRule: name,
+                };
+                securityLogger.log("evaluateCommand", result.verdict, { command: trimmed, reason: result.reason, rule: name });
+                return result;
+            }
         }
     }
 
-    const result: PolicyResult = { verdict: "confirm", reason: "Not on the safe list — requires user approval." };
+    const result: PolicyResult = { verdict: "confirm", reason: "Not on the low-risk list — requires user approval." };
     securityLogger.log("evaluateCommand", result.verdict, { command: trimmed, reason: result.reason });
     return result;
 }
