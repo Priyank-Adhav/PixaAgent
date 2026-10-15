@@ -64,12 +64,12 @@ describe("Adversarial Security Tests & Secret Redaction", () => {
                 },
             };
 
-            logger.log("executeCommand: api_key = 'secret12345678'", "allow", {
+            logger.log("executeCommand: api_key = 'secret12345678'", "low-risk", {
                 token: "sk-1234567890123456789020",
                 normal: "value",
             });
 
-            expect(loggedMsg).toContain("[ALLOW]");
+            expect(loggedMsg).toContain("[LOW-RISK]");
             expect(loggedMsg).not.toContain("secret12345678");
             expect(loggedMsg).not.toContain("sk-1234567890123456789020");
             expect(loggedMsg).toContain("[REDACTED]");
