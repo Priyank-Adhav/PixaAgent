@@ -142,3 +142,35 @@ This document records completed remediation branches after they are implemented.
 - **Summary of fix:** Added setting `pixa.semanticSearch.enabled` (default `false`). `VectorStore`, initial indexing, and incremental indexing are gated behind it. When disabled, `extension.ts` constructs `WorkspaceIndexer` as the `RepoIndex` — same interface, no `VectorStore` touched. Backward compat: if `.pixa/index/` already exists on disk, semantic search is treated as enabled regardless of the setting. Removed `hidePixaFolderFromExplorer` entirely (its `.vscode/settings.json` write was the exact class of mutation R-009 targets). Extracted `ensureGitignored` to a module-level exported pure function returning `boolean` for "did we mutate," and removed its call from `VectorStore.init()`. Opt-in flow: notification offers Reload; enabling writes to `ConfigurationTarget.Global` (not `Workspace`) so the repo is never dirtied. `search.ts` guard returns an actionable message when semantic search is disabled.
 - **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (212 passing, +7 new tests); `npm test -w pixa-agent` (220 passing, incl. `Vector.test.ts` updated and green). Manual clean-repo validation still to be recorded.
 - **Remaining follow-up:** Manual validation: F5 → open clean scratch repo → `git status` must be clean. Disable transition (on→off mid-session) requires reload; not handled. `onDidChangeConfiguration` handler has no dismissal fallback (unlike `promptReloadToEnable`). `ensureGitignored`'s `enabled` param is test-only in production. `ConfigurationTarget.Global` means enabling affects all workspaces — deliberate, keeps the repo clean.
+
+## Branch: `fix/ambiguous-file-mentions`
+
+- **ID:** R-011 (and R-013, found while working on it)
+- **Owner:** Abhishek Abhang
+- **Target issue:** R-011: if an `@file` mention wasn't an exact workspace path, `resolveMentions` attached the first `findFiles` hit. With duplicate names (`src/a/config.ts`, `src/b/config.ts`), `@config.ts` attached an arbitrary file without telling the user or the model. R-013: the exact-match branch built the path with `path.join` instead of `resolveInWorkspace()`, so `@../secret.txt` read a file outside the workspace and sent it to the model.
+- **Evidence status:** Code-plausible (manual VS Code validation pending)
+- **Files changed:**
+  - `packages/pixa-agent/src/agent/mentions.ts`
+  - `packages/pixa-agent/src/ui/chatViewProvider.ts`
+  - `packages/pixa-agent/test/mentions.test.ts`
+- **Summary of fix:** New pure functions in `mentions.ts`:
+  - `normalizeMention` converts `\` to `/` and strips a leading `./` or `/`.
+  - `isTraversalMention` flags `..` segments, drive letters and `~`.
+  - `pickMentionMatch` keeps segment-boundary suffix matches only (`config.ts` never matches `myconfig.ts`). An exact root-relative path wins; several matches are returned as `ambiguous`, shallowest first, capped at `MAX_AMBIGUOUS_CANDIDATES = 10` with a `truncated` flag.
+
+  `formatAttachedFiles` takes an optional third argument and renders ambiguous mentions as `<file path="…" error="ambiguous" candidates="…" />`.
+
+  `resolveMentions` now:
+  - rejects traversal mentions up front;
+  - resolves the exact path through `resolveInWorkspace()`;
+  - searches with the indexer's `EXCLUDE` list instead of only `node_modules`, and drops results outside the workspace root;
+  - opens a QuickPick for duplicates. Stop cancels the QuickPick. If it is dismissed, nothing is attached and the ambiguous tag goes to the model.
+  - posts a `status` line in the chat whenever the attached file differs from what was typed.
+- **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (221 passing, +16 new tests in `mentions.test.ts`); `npm run compile -w pixa-agent`. Manual Dev Host validation is not done yet.
+- **Remaining follow-up:** Manual validation:
+  1. Duplicate `config.ts` + `@config.ts` → QuickPick appears and a status line shows the chosen path.
+  2. Dismiss the QuickPick → the agent asks which file you meant.
+  3. `@a/config.ts` → attached without a prompt.
+  4. `@../outside.txt` → not found, and its contents are not sent.
+
+  R-013 touches a load-bearing safety rule — call it out in the PR description. Behaviour change: the search now skips `dist/`, `build/`, `.git/`, `.pixa/` etc. (exact paths such as `@dist/x.js` still work). Possible follow-up: `@`-autocomplete in the chat input. Overlaps R-003/R-007 in `chatViewProvider.ts` (they change `applyChange`; this changes `resolveMentions`), so rebase on whichever merges first.
