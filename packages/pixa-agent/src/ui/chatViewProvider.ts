@@ -12,7 +12,13 @@ import { ChangeSet } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
 import { resolveInWorkspace } from "../tools/paths";
-import { parseMentions, formatAttachedFiles, type AttachedFile } from "../agent/mentions";
+import {
+  parseMentions,
+  formatAttachedFiles,
+  normalizeMention,
+  isTraversalMention,
+  type AttachedFile,
+} from "../agent/mentions";
 import type { ChatMessage } from "../providers/types";
 import type { ProvidersConfig } from "../providers/config";
 import { validateProviderForm, parseModelsResponse, modelsEndpointUrl } from "../providers/providerForm";
@@ -551,10 +557,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     const unresolved: string[] = [];
     for (const mention of mentions) {
       try {
-        const norm = mention.replace(/\\/g, "/");
+        // Mentions are jailed like every other agent file access: "@../x" must
+        // never read outside the workspace.
+        if (isTraversalMention(mention)) {
+          unresolved.push(mention);
+          continue;
+        }
+        const norm = normalizeMention(mention);
         // Exact relative path first, then a suffix match anywhere in the workspace.
         let uri: vscode.Uri | undefined;
-        const exact = vscode.Uri.file(path.join(this.workspaceRoot, norm));
+        const exact = vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, norm));
         try {
           await vscode.workspace.fs.stat(exact);
           uri = exact;
