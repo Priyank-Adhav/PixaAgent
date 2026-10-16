@@ -55,4 +55,36 @@ describe("VectorStore workspace jail (R-013)", () => {
     expect(text).toBe("");
     expect(text).not.toContain(SECRET);
   });
+
+  it("crafted entries in an index loaded from disk never reach search results and are purged", async () => {
+    fs.writeFileSync(path.join(workspace, "src", "a.ts"), "export const token = 1;\n");
+    const chunk = (id: string, filePath: string, text: string) => ({
+      id,
+      filePath,
+      startLine: 0,
+      endLine: 0,
+      symbolName: null,
+      symbolKind: null,
+      text,
+    });
+
+    // Simulate a repo that ships a pre-built .pixa/index/index.json.
+    const writer = new VectorStore(workspace);
+    await writer.upsertChunks([
+      chunk("legit", "src/a.ts", "export const token = 1;"),
+      chunk("crafted", ESCAPING_PATH, "secret token leak"),
+    ]);
+
+    // A fresh store (e.g. the extension activating on the cloned repo) loads it.
+    const store = new VectorStore(workspace);
+    const results = await store.query("secret token leak", 10);
+    expect(results.map((r) => r.filePath)).not.toContain(ESCAPING_PATH);
+    expect(results.some((r) => r.text.includes(SECRET))).toBe(false);
+    expect(await store.listIndexedFiles()).toEqual(["src/a.ts"]);
+    expect(await store.isFileIndexed(ESCAPING_PATH)).toBe(false);
+
+    // The next index run starts by purging non-indexable entries.
+    expect(await store.purgeNonIndexableFiles()).toBe(1);
+    expect(await store.size()).toBe(1);
+  });
 });
