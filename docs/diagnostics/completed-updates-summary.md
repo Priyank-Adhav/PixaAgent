@@ -143,6 +143,36 @@ This document records completed remediation branches after they are implemented.
 - **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (212 passing, +7 new tests); `npm test -w pixa-agent` (220 passing, incl. `Vector.test.ts` updated and green). Manual clean-repo validation still to be recorded.
 - **Remaining follow-up:** Manual validation: F5 → open clean scratch repo → `git status` must be clean. Disable transition (on→off mid-session) requires reload; not handled. `onDidChangeConfiguration` handler has no dismissal fallback (unlike `promptReloadToEnable`). `ensureGitignored`'s `enabled` param is test-only in production. `ConfigurationTarget.Global` means enabling affects all workspaces — deliberate, keeps the repo clean.
 
+## Branch: `perf/async-indexing-pipeline`
+
+- **ID:** R-010
+- **Owner:** Abhishek Abhang
+- **Target issue:** The extension host could stall while building the initial semantic index for a large workspace.
+- **Evidence status:** Code-plausible, with the root cause confirmed in code. Vectra 0.15's `LocalIndex.endUpdate()` re-serializes the entire `index.json` with a synchronous `JSON.stringify`, and the pipeline ran one transaction per file. A cold index of N files therefore rewrote an ever-growing file N times: quadratic total work, with each rewrite blocking the event loop. A 100-file harness run produced a 3.2 MB index; larger before/after runs are still to be recorded.
+- **Files changed:**
+  - `packages/pixa-agent/src/indexer/indexingPipeline.ts`
+  - `packages/pixa-agent/src/indexer/vectorStore.ts`
+  - `packages/pixa-agent/src/indexer/indexingMetrics.ts` (new)
+  - `packages/pixa-agent/src/extension.ts`
+  - `packages/pixa-agent/scripts/gen-large-workspace.mjs` (new)
+  - `packages/pixa-agent/.vscodeignore`
+  - `packages/pixa-agent/test/indexingPipeline.test.ts` (new)
+  - `packages/pixa-agent/test/indexingMetrics.test.ts` (new)
+  - `packages/pixa-agent/test/indexing.perf.manual.test.ts` (new, manual)
+- **Summary of fix:**
+  - **Batched writes.** `VectorStore.replaceFilesChunks` commits up to 25 files or 500 chunks per transaction instead of one per file. It drops each file's old chunk ids first, which also fixes stale chunks being left in the index when a file's line ranges changed on a full re-index. Vanished files are removed in one transaction.
+  - **One writer at a time.** All vectra transactions are serialized. Before, a save during initial indexing, or Rebuild pressed mid-run, could throw "Update already in progress".
+  - **Async I/O and yielding.** File reads and stats are async in the pipeline and in `VectorStore` init/query. The pipeline yields to the event loop after 15 ms of work and every 200 upserts inside a transaction. Progress is reported at most every 100 ms.
+  - **Safer manifest.** It is written atomically (tmp + rename) and checkpointed after each committed batch.
+  - **Cancellable.** The progress notification can be cancelled. Finished work is kept, the vanished-file sweep is skipped (so files not yet reached aren't deleted), and Rebuild resumes from the manifest. Rebuild during a run joins the in-flight run.
+  - **Measurement.** `indexingMetrics.ts` measures event-loop lag, and the Pixa Index channel now logs the duration and lag p50/p99/max for each run.
+- **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (223 passing, including 11 new tests for batching, stale-chunk replacement, vanished files, cancel/resume, concurrent `indexFile`, write serialization, the yielder, and lag metrics); `npm run compile -w pixa-agent`. The perf harness was smoke-run at 100 files on the baseline. `npm test` (which includes `Vector.test.ts` with the real model) has not been run on this branch.
+- **Remaining follow-up:**
+  - Record before/after numbers: `PIXA_PERF=1 PIXA_PERF_SIZES=250,1000 npx vitest run test/indexing.perf.manual.test.ts` on R-009 (`79729bb`) and on this branch. Then update Evidence status to Confirmed or Not reproduced.
+  - Run `npm test -w pixa-agent`.
+  - Dev Host checks: index a 1000–5000 file generated workspace, save a file during indexing (no lock error), cancel at about 50% and then Rebuild (it resumes).
+  - One sync stringify per batch remains. If lag is still high, a follow-up could switch vectra codecs or move embedding and serialization to a `worker_thread`.
+  - If `indexFile` and a full index run at the same time, each may overwrite the other's manifest entry. That is harmless: the file is simply re-indexed next run.
 ## Branch: `fix/ambiguous-file-mentions`
 
 - **ID:** R-011 (and R-013, found while working on it)
