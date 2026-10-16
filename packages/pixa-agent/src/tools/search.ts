@@ -135,7 +135,7 @@ const semanticSearch: Tool = {
     }
 
     if (!hasSemanticQuery(ctx.index)) {
-      return "Semantic search is not enabled for this workspace. Use search_workspace instead.";
+      return "Semantic search is disabled for this workspace. Enable 'pixa.semanticSearch.enabled' and reload to use it.";
     }
 
     if (ctx.index.chunkCount) {
@@ -143,6 +143,10 @@ const semanticSearch: Tool = {
       if (count === 0) {
         return "Semantic index is empty or still building. Use search_workspace for exact text matches, or wait for indexing to finish (see the Pixa status bar).";
       }
+    }
+
+    if (!ctx.index.query) {
+      return "Semantic search is disabled for this workspace. Enable 'pixa.semanticSearch.enabled' and reload to use it.";
     }
 
     let results: QueryResult[];

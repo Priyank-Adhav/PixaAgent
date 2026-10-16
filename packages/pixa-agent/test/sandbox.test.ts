@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateCommand } from "../src/security/sandbox";
+import { evaluateCommand, detectInteractive } from "../src/security/sandbox";
 
 describe("evaluateCommand — deny list", () => {
     const denyCases: [string, string][] = [
@@ -73,4 +73,34 @@ describe("evaluateCommand — deny takes precedence over allow", () => {
         const result = evaluateCommand("git push origin main --force");
         expect(result.verdict).toBe("deny");
     });
+});
+
+describe("detectInteractive", () => {
+    const positives = [
+        "read -p 'Name: ' name",
+        "pause",
+        "python -i",
+        "git rebase -i HEAD~2",
+        "npm init",
+    ];
+
+    for (const cmd of positives) {
+        it(`detects interactive command: ${cmd}`, () => {
+            expect(detectInteractive(cmd)).not.toBeNull();
+        });
+    }
+
+    const negatives = [
+        "npm run thread",
+        'git log --grep="read"',
+        "cat readme.md",
+        "echo spread",
+        "npm init -y",
+    ];
+
+    for (const cmd of negatives) {
+        it(`does not falsely match non-interactive command: ${cmd}`, () => {
+            expect(detectInteractive(cmd)).toBeNull();
+        });
+    }
 });
