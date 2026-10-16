@@ -85,6 +85,10 @@ rests on:
   running.
 - All agent file paths are jailed to the open workspace via
   `resolveInWorkspace()` — no reading or writing outside the project folder.
+  This includes any path Pixa didn't compute itself: chat `@`-mentions, model
+  tool arguments, and data read back from disk such as `.pixa/index/` metadata
+  (a cloned repo can ship that file). Use `tryResolveInWorkspace()` where an
+  escape should mean "not found".
 - API keys live only in VS Code's encrypted `SecretStorage`, never in
   `settings.json` or anywhere else on disk.
 
