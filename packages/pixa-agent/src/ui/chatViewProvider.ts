@@ -280,11 +280,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
 
   private transcript(): { role: string; text: string }[] {
     return this.loop.history
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || (m.toolCalls && m.toolCalls.length > 0)))
       .map((m) => ({
         role: m.role,
-        // Hide bulky attached-file blocks from the replayed view.
-        text: m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]"),
+        text: m.content.trim()
+          ? m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]")
+          : `*(used ${m.toolCalls?.length} tool${m.toolCalls?.length === 1 ? "" : "s"})*`,
       }));
   }
 
@@ -503,13 +504,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
       if (action === "apply-all") {
         let appliedCount = 0;
         const skipped: string[] = [];
+        let hasError = false;
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") {
-            const res = await this.applyChange(change.path);
-            if (res.applied) {
-              appliedCount++;
-            } else if (res.reason) {
-              skipped.push(change.path);
+            try {
+              const res = await this.applyChange(change.path);
+              if (res.applied) {
+                appliedCount++;
+              } else if (res.reason) {
+                skipped.push(change.path);
+              }
+            } catch (e) {
+              hasError = true;
+              this.post({ type: "error", message: `Error applying ${change.path}: ${(e as Error).message}` } as any);
             }
           }
         }
@@ -517,22 +524,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
           const summary = `Apply all: ${appliedCount} applied, ${skipped.length} skipped as stale (${skipped.join(", ")}).`;
           this.post({ type: "error", message: summary });
           void vscode.window.showWarningMessage(`Pixa: ${summary}`);
-        } else if (appliedCount > 0) {
+        } else if (appliedCount > 0 && !hasError) {
           this.post({ type: "status", text: `Applied all ${appliedCount} pending change(s).` });
         }
       } else if (action === "reject-all") {
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") this.changeSet.markRejected(change.path);
         }
+        this.post({ type: "status", text: "Rejected all pending changes." } as any);
       } else if (relPath) {
         if (action === "apply") {
           const res = await this.applyChange(relPath);
           if (!res.applied && res.reason) {
             this.post({ type: "error", message: `Cannot apply ${relPath} — ${res.reason}. Staged change kept pending.` });
+          } else if (res.applied) {
+            this.post({ type: "status", text: `Applied changes to ${relPath}` } as any);
           }
         }
-        if (action === "reject") this.changeSet.markRejected(relPath);
-        if (action === "revert") await this.revertChange(relPath);
+        if (action === "reject") {
+          this.changeSet.markRejected(relPath);
+          this.post({ type: "status", text: `Rejected changes to ${relPath}` } as any);
+        }
+        if (action === "revert") {
+          await this.revertChange(relPath);
+          this.post({ type: "status", text: `Reverted changes to ${relPath}` } as any);
+        }
       }
       this.postChangeSet();
     } catch (e) {
