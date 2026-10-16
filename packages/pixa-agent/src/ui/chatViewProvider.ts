@@ -11,7 +11,7 @@ import { AgentLoop } from "../agent/loop";
 import { ChangeSet, checkChangeFreshness } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
-import { resolveInWorkspace } from "../tools/paths";
+import { resolveInWorkspace, tryResolveInWorkspace } from "../tools/paths";
 import { parseMentions, formatAttachedFiles, type AttachedFile } from "../agent/mentions";
 import type { ChatMessage } from "../providers/types";
 import type { ProvidersConfig } from "../providers/config";
@@ -603,16 +603,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     const unresolved: string[] = [];
     for (const mention of mentions) {
       try {
-        const norm = mention.replace(/\\/g, "/");
+        // A leading "/" or "./" means workspace-root-relative, as before.
+        const norm = mention.replace(/\\/g, "/").replace(/^(\.?\/)+/, "");
+        // Mentions are jailed like every other agent file access (R-013):
+        // "@../secret.txt" must never read outside the workspace.
+        const exactPath = tryResolveInWorkspace(this.workspaceRoot, norm);
+        if (!exactPath) {
+          unresolved.push(mention);
+          continue;
+        }
         // Exact relative path first, then a suffix match anywhere in the workspace.
         let uri: vscode.Uri | undefined;
-        const exact = vscode.Uri.file(path.join(this.workspaceRoot, norm));
+        const exact = vscode.Uri.file(exactPath);
         try {
           await vscode.workspace.fs.stat(exact);
           uri = exact;
         } catch {
-          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 1);
-          uri = found[0];
+          // In a multi-root window findFiles also searches the other folders;
+          // only accept hits inside this workspace root.
+          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 10);
+          uri = found.find((u) => tryResolveInWorkspace(this.workspaceRoot, u.fsPath) !== null);
         }
         if (!uri) {
           unresolved.push(mention);

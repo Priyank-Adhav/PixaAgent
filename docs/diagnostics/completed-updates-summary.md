@@ -142,3 +142,41 @@ This document records completed remediation branches after they are implemented.
 - **Summary of fix:** Added setting `pixa.semanticSearch.enabled` (default `false`). `VectorStore`, initial indexing, and incremental indexing are gated behind it. When disabled, `extension.ts` constructs `WorkspaceIndexer` as the `RepoIndex` — same interface, no `VectorStore` touched. Backward compat: if `.pixa/index/` already exists on disk, semantic search is treated as enabled regardless of the setting. Removed `hidePixaFolderFromExplorer` entirely (its `.vscode/settings.json` write was the exact class of mutation R-009 targets). Extracted `ensureGitignored` to a module-level exported pure function returning `boolean` for "did we mutate," and removed its call from `VectorStore.init()`. Opt-in flow: notification offers Reload; enabling writes to `ConfigurationTarget.Global` (not `Workspace`) so the repo is never dirtied. `search.ts` guard returns an actionable message when semantic search is disabled.
 - **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (212 passing, +7 new tests); `npm test -w pixa-agent` (220 passing, incl. `Vector.test.ts` updated and green). Manual clean-repo validation still to be recorded.
 - **Remaining follow-up:** Manual validation: F5 → open clean scratch repo → `git status` must be clean. Disable transition (on→off mid-session) requires reload; not handled. `onDidChangeConfiguration` handler has no dismissal fallback (unlike `promptReloadToEnable`). `ensureGitignored`'s `enabled` param is test-only in production. `ConfigurationTarget.Global` means enabling affects all workspaces — deliberate, keeps the repo clean.
+
+## Branch: `fix/workspace-jail-hardening`
+
+- **ID:** R-013
+- **Owner:** Abhishek Abhang
+- **Target issue:** Two file reads bypassed the `resolveInWorkspace()` jail, a load-bearing rule in CONTRIBUTING:
+  - **(A) @-mentions.** `ChatViewProvider.resolveMentions` built the exact-match path with `path.join`, so `@../secret.txt` read a file outside the workspace and attached it to the model request.
+  - **(B) Index metadata.** `VectorStore.readTextForChunk` joined the `filePath` stored in `.pixa/index/index.json` onto the workspace root. A cloned repo can ship that file, and since R-009 an existing `.pixa/index/` auto-enables semantic search. An entry like `src/../../secret.txt` got past `isIndexablePath` (which only rejected paths *starting* with `..`), so `semantic_search` returned the outside file's contents to the model.
+- **Evidence status:** Confirmed. A new test on `main` code had `readTextForChunk("src/../../secret.txt")` return the contents of a file next to the workspace, and new `isIndexablePath` tests showed traversal and absolute paths being accepted.
+- **Files changed:**
+  - `packages/pixa-agent/src/tools/paths.ts`
+  - `packages/pixa-agent/src/indexer/indexablePaths.ts`
+  - `packages/pixa-agent/src/indexer/vectorStore.ts`
+  - `packages/pixa-agent/src/ui/chatViewProvider.ts`
+  - `CONTRIBUTING.md`
+  - `packages/pixa-agent/test/paths.test.ts`
+  - `packages/pixa-agent/test/indexablePaths.test.ts` (new)
+  - `packages/pixa-agent/test/vectorStore.jail.test.ts` (new)
+- **Summary of fix:**
+  - New `tryResolveInWorkspace()`: the same jail as `resolveInWorkspace()`, but it returns `null` instead of throwing.
+  - `isIndexablePath` now also rejects any `..` segment, a leading `/` or `\`, and drive letters. Crafted index entries are filtered from `query`, `listIndexedFiles` and `isFileIndexed`, and `purgeNonIndexableFiles` deletes them on the next index run.
+  - `readTextForChunk` resolves through the jail; an escaping path reads as empty text.
+  - `resolveMentions` strips a leading `/` or `./` (keeping `@/src/x.ts` root-relative), then resolves the exact path through the jail. An escaping mention is reported as not found.
+  - Suffix-search hits outside this workspace root (multi-root windows) are skipped.
+  - CONTRIBUTING now says that chat mentions, model arguments and on-disk data are untrusted paths.
+- **Validation performed:**
+  - `npm run typecheck -w pixa-agent`.
+  - `npm run test:offline -w pixa-agent`: 246 passing (238 on `main`, so 8 new tests).
+  - `npm test -w pixa-agent`: 255 passing, 1 skipped, the same skip as on `main`.
+  - `npm run compile -w pixa-agent`.
+  - Commits `d6f6184`, `08736db` and `3e171fd` add tests that fail on purpose until the commit after each. Squash them into their fixes if every commit must be green.
+  - Manual Dev Host validation is not done yet.
+- **Remaining follow-up:**
+  - Manual check 1: put `secret.txt` beside the workspace and send `@../secret.txt`. It should be reported as not found and the contents should not be sent.
+  - Manual check 2: in a scratch repo, add a crafted `.pixa/index/index.json` with a `src/../../secret.txt` entry (create it with the `vectorStore.jail.test.ts` setup). `semantic_search` must not return the secret, and the entry should be gone after the initial index.
+  - Rebase R-011 (`fix/ambiguous-file-mentions`) after this merges. Its commit `76f7312` covers the same mention fix; resolve `resolveMentions` to R-011's flow using `tryResolveInWorkspace`, and `git rebase --skip` if that commit becomes empty.
+  - R-010 makes `readTextForChunk` async; whichever branch merges second keeps both the async read and the jail.
+  - Out of scope: a symlink inside the workspace that points outside it (an existing gap in `resolveInWorkspace`), and whether a committed `.pixa/index/` should auto-enable semantic search at all. After this fix, such an index can only inject in-repo search results.

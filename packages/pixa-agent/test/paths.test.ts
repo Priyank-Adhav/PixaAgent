@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
-import { resolveInWorkspace } from "../src/tools/paths";
+import { resolveInWorkspace, tryResolveInWorkspace } from "../src/tools/paths";
 
 const root = process.platform === "win32" ? "C:\\work\\proj" : "/work/proj";
 
@@ -30,5 +30,20 @@ describe("resolveInWorkspace", () => {
 
   it("rejects backslash escapes on windows-style input", () => {
     expect(() => resolveInWorkspace(root, "..\\..\\evil")).toThrow(/escapes workspace/);
+  });
+});
+
+describe("tryResolveInWorkspace", () => {
+  it("returns the absolute path for paths inside the workspace", () => {
+    expect(tryResolveInWorkspace(root, "src/a.ts")).toBe(path.join(root, "src", "a.ts"));
+    expect(tryResolveInWorkspace(root, ".")).toBe(path.resolve(root));
+  });
+
+  it("returns null instead of throwing for escapes", () => {
+    expect(tryResolveInWorkspace(root, "../secrets.txt")).toBeNull();
+    expect(tryResolveInWorkspace(root, "src/../../other")).toBeNull();
+    expect(tryResolveInWorkspace(root, "..\\..\\evil")).toBeNull();
+    const outside = process.platform === "win32" ? "C:\\Windows\\system32" : "/etc/passwd";
+    expect(tryResolveInWorkspace(root, outside)).toBeNull();
   });
 });
