@@ -4,7 +4,7 @@ export interface AuditLogEntry {
     timestamp: string;
     action: string;
     details?: Record<string, unknown>;
-    outcome: "allow" | "deny" | "confirm" | "success" | "error";
+    outcome: "low-risk" | "deny" | "confirm" | "success" | "error";
 }
 
 export class SecurityLogger {

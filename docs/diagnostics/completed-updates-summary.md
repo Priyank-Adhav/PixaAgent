@@ -174,6 +174,29 @@ This document records completed remediation branches after they are implemented.
   4. `@../outside.txt` → not found, and its contents are not sent.
 
   R-013 touches a load-bearing safety rule — call it out in the PR description. Behaviour change: the search now skips `dist/`, `build/`, `.git/`, `.pixa/` etc. (exact paths such as `@dist/x.js` still work). Possible follow-up: `@`-autocomplete in the chat input. Overlaps R-003/R-007 in `chatViewProvider.ts` (they change `applyChange`; this changes `resolveMentions`), so rebase on whichever merges first.
+## Branch: `fix/terminal-sandbox-policy-semantics`
+
+- **ID:** R-012
+- **Owner:** Abhishek Abhang
+- **Target issue:** The sandbox policy header said an `allow` verdict "runs without asking", and the security audit log recorded such commands as "auto-allowed". In fact `run_command` asks for approval for every command that isn't denied, which is what CONTRIBUTING's load-bearing rules require. The "safe" list also matched commands that are not read-only, so the label overstated what they do.
+- **Evidence status:** Confirmed. New tests run against the R-008 base classified 18 non-read-only commands as `allow`: chaining (`ls && rm -rf src`), redirection (`echo x > src/index.ts`), substitution, `find -delete`/`-exec`, `git branch -D`, `git remote add/remove`, `git diff --output=…`, `rg --pre`, and `npm test`.
+- **Files changed:**
+  - `packages/pixa-agent/src/security/sandbox.ts`
+  - `packages/pixa-agent/src/security/audit.ts`
+  - `packages/pixa-agent/src/tools/terminal.ts`
+  - `packages/pixa-agent/test/sandbox.test.ts`
+  - `packages/pixa-agent/test/terminalSandbox.test.ts`
+  - `packages/pixa-agent/test/security.test.ts`
+- **Summary of fix:** Decision: keep approval for every non-denied command; no auto-run.
+  - The `CommandVerdict` value `"allow"` is renamed to `"low-risk"`, in the audit `outcome` type too. The header doc now says only `deny` changes behaviour and that `low-risk` is informational.
+  - Audit reasons now read "Read-only/informational command — still requires user approval." and "Not on the low-risk list — requires user approval."
+  - `SAFE_PREFIXES` is renamed to `LOW_RISK_PATTERNS` and tightened. A `NOT_LOW_RISK` guard sends anything with `; & | < >`, a backtick, `$(`, a newline, `--output` or `--pre` to `confirm`. `find` and `npm test`/`npm run test` are removed. `git branch` and `git remote` are low-risk only in their listing forms.
+  - `terminal.ts` changes only in a comment. There is no behaviour change: the same commands are blocked and the same commands prompt.
+- **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (244 passing, +27 vs the R-008 base); `npm run compile -w pixa-agent`. Manual Dev Host validation is not done yet.
+- **Remaining follow-up:**
+  - Manual check: `git status` and `ls && echo hi` both show the approval card, and the audit channel shows `[LOW-RISK]` / `[CONFIRM]` with no "auto-allowed".
+  - Possible follow-up: show the verdict as a "read-only" / "may modify files" badge on the approval card. That needs `ApprovalService.requestApproval`, `events.ts` and `main.js`, and overlaps R-003/R-007.
+  - Stacked on R-008. `main`'s three docs commits were cherry-picked onto this branch so the tracker matches `main`. After R-008 merges, run `git rebase --onto origin/main origin/fix/interactive-command-handling` and git will drop them as already applied.
 ## Branch: `fix/workspace-jail-hardening`
 
 - **ID:** R-013
