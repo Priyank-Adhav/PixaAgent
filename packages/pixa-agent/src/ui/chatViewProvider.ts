@@ -603,8 +603,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
           await vscode.workspace.fs.stat(exact);
           uri = exact;
         } catch {
-          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 1);
-          uri = found[0];
+          // In a multi-root window findFiles also searches the other folders;
+          // only accept hits inside this workspace root.
+          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 10);
+          uri = found.find((u) => tryResolveInWorkspace(this.workspaceRoot, u.fsPath) !== null);
         }
         if (!uri) {
           unresolved.push(mention);
