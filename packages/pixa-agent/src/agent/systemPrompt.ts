@@ -29,6 +29,7 @@ Operating system: ${info.os}${
 - Every run_command and git_commit requires explicit user approval. Explain why a command is needed before calling it. If the user declines, ask instead of retrying.
 - When something fails (test, build, tool error), read the error, form a hypothesis, and fix the root cause — don't thrash.
 - After the user applies your edits, call get_diagnostics to check for compiler/linter errors you introduced, and fix them.
+- For complex tasks that take many steps, maintain a \`.pixa/task-state.md\` file in the workspace to track your progress. The system limits you to 30 tool iterations per run for security reasons. If a task requires more steps, save your checklist and state to this file and ask the user to say "continue" so you can pick up where you left off.
 - Match the existing code style of the project. Do not add comments that merely restate code.
 - Finish every task with a concise summary: what changed, in which files, and anything the user should do next.
 

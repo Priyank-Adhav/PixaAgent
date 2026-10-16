@@ -8,10 +8,10 @@ import { ToolRegistry } from "../tools/registry";
 import type { ApprovalService, ToolContext } from "../tools/types";
 import type { AgentEvent } from "../agent/events";
 import { AgentLoop } from "../agent/loop";
-import { ChangeSet } from "../edits/changeSet";
+import { ChangeSet, checkChangeFreshness } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
-import { resolveInWorkspace } from "../tools/paths";
+import { resolveInWorkspace, tryResolveInWorkspace } from "../tools/paths";
 import {
   parseMentions,
   formatAttachedFiles,
@@ -290,11 +290,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
 
   private transcript(): { role: string; text: string }[] {
     return this.loop.history
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || (m.toolCalls && m.toolCalls.length > 0)))
       .map((m) => ({
         role: m.role,
-        // Hide bulky attached-file blocks from the replayed view.
-        text: m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]"),
+        text: m.content.trim()
+          ? m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]")
+          : `*(used ${m.toolCalls?.length} tool${m.toolCalls?.length === 1 ? "" : "s"})*`,
       }));
   }
 
@@ -511,17 +512,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
         return;
       }
       if (action === "apply-all") {
+        let appliedCount = 0;
+        const skipped: string[] = [];
+        let hasError = false;
         for (const change of this.changeSet.list()) {
-          if (change.status === "pending") await this.applyChange(change.path);
+          if (change.status === "pending") {
+            try {
+              const res = await this.applyChange(change.path);
+              if (res.applied) {
+                appliedCount++;
+              } else if (res.reason) {
+                skipped.push(change.path);
+              }
+            } catch (e) {
+              hasError = true;
+              this.post({ type: "error", message: `Error applying ${change.path}: ${(e as Error).message}` } as any);
+            }
+          }
+        }
+        if (skipped.length > 0) {
+          const summary = `Apply all: ${appliedCount} applied, ${skipped.length} skipped as stale (${skipped.join(", ")}).`;
+          this.post({ type: "error", message: summary });
+          void vscode.window.showWarningMessage(`Pixa: ${summary}`);
+        } else if (appliedCount > 0 && !hasError) {
+          this.post({ type: "status", text: `Applied all ${appliedCount} pending change(s).` });
         }
       } else if (action === "reject-all") {
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") this.changeSet.markRejected(change.path);
         }
+        this.post({ type: "status", text: "Rejected all pending changes." } as any);
       } else if (relPath) {
-        if (action === "apply") await this.applyChange(relPath);
-        if (action === "reject") this.changeSet.markRejected(relPath);
-        if (action === "revert") await this.revertChange(relPath);
+        if (action === "apply") {
+          const res = await this.applyChange(relPath);
+          if (!res.applied && res.reason) {
+            this.post({ type: "error", message: `Cannot apply ${relPath} — ${res.reason}. Staged change kept pending.` });
+          } else if (res.applied) {
+            this.post({ type: "status", text: `Applied changes to ${relPath}` } as any);
+          }
+        }
+        if (action === "reject") {
+          this.changeSet.markRejected(relPath);
+          this.post({ type: "status", text: `Rejected changes to ${relPath}` } as any);
+        }
+        if (action === "revert") {
+          await this.revertChange(relPath);
+          this.post({ type: "status", text: `Reverted changes to ${relPath}` } as any);
+        }
       }
       this.postChangeSet();
     } catch (e) {
@@ -544,13 +581,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     this.diffPreview.invalidate(relPath);
   }
 
-  private async applyChange(relPath: string): Promise<void> {
+  private async applyChange(relPath: string): Promise<{ applied: boolean; reason?: string }> {
     const change = this.changeSet.get(relPath);
-    if (!change || change.status !== "pending") return;
+    if (!change || change.status !== "pending") return { applied: false };
     const abs = resolveInWorkspace(this.workspaceRoot, relPath);
+
+    let diskContent: string | null = null;
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(abs));
+      diskContent = Buffer.from(bytes).toString("utf8");
+    } catch {
+      diskContent = null;
+    }
+
+    const freshness = checkChangeFreshness(change, diskContent);
+    if (!freshness.fresh) {
+      return { applied: false, reason: freshness.message };
+    }
+
     await vscode.workspace.fs.writeFile(vscode.Uri.file(abs), Buffer.from(change.newContent, "utf8"));
     this.changeSet.markApplied(relPath);
     this.diffPreview.invalidate(relPath);
+    return { applied: true };
   }
 
   /** Resolve @path mentions against workspace files and append their contents. */
@@ -564,23 +616,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     const notes: string[] = [];
     for (const mention of mentions) {
       try {
-        // Mentions are jailed like every other agent file access: "@../x" must
-        // never read outside the workspace.
+        // Mentions are jailed like every other agent file access (R-013):
+        // "@../secret.txt" must never read outside the workspace.
         if (isTraversalMention(mention)) {
           unresolved.push(mention);
           continue;
         }
+        // A leading "/" or "./" means workspace-root-relative.
         const norm = normalizeMention(mention);
+        const exactPath = tryResolveInWorkspace(this.workspaceRoot, norm);
+        if (!exactPath) {
+          unresolved.push(mention);
+          continue;
+        }
         // Exact relative path first, then a suffix match anywhere in the workspace.
         let rel: string | undefined;
         try {
-          await vscode.workspace.fs.stat(vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, norm)));
+          await vscode.workspace.fs.stat(vscode.Uri.file(exactPath));
           rel = norm;
         } catch {
           const found = await vscode.workspace.findFiles(`**/${norm}`, EXCLUDE, MAX_AMBIGUOUS_CANDIDATES + 1);
+          // In a multi-root window findFiles also searches the other folders;
+          // only keep hits inside this workspace root.
           const candidates = found
-            .map((u) => path.relative(this.workspaceRoot, u.fsPath).split(path.sep).join("/"))
-            .filter((p) => p && !p.startsWith(".."));
+            .filter((u) => tryResolveInWorkspace(this.workspaceRoot, u.fsPath) !== null)
+            .map((u) => path.relative(this.workspaceRoot, u.fsPath).split(path.sep).join("/"));
           const match = pickMentionMatch(norm, candidates);
           if (match.kind === "unique") {
             rel = match.path;
