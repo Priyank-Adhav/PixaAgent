@@ -317,6 +317,7 @@ export class VectorStore {
 
   async isFileIndexed(relPath: string): Promise<boolean> {
     await this.ready;
+    if (!isIndexablePath(relPath)) return false;
     const ids = this.fileToIds.get(relPath);
     return !!ids && ids.size > 0;
   }
