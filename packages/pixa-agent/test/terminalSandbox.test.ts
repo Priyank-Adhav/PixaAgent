@@ -35,24 +35,26 @@ describe("run_command sandbox wiring", () => {
     expect(approvalAsked).toBe(false); // must not even prompt for a denied command
   });
 
-  it("still requires approval for a non-denied command (no auto-run)", async () => {
-    let approvalAsked = false;
-    const result = await runCommand.execute(
-      { command: "git status" }, // an "allow" verdict in the policy
-      ctx({
-        approvals: {
-          requestApproval: async () => {
-            approvalAsked = true;
-            return false; // user declines
+  // "low-risk" is informational only: the policy never upgrades a command to
+  // auto-run. Approval is still asked and, because the user declines, nothing runs.
+  for (const command of ["git status", "ls -la", "echo hello", "cat package.json", "node --version"]) {
+    it(`still requires approval for a low-risk command (no auto-run): ${command}`, async () => {
+      let approvalAsked = false;
+      const result = await runCommand.execute(
+        { command },
+        ctx({
+          approvals: {
+            requestApproval: async () => {
+              approvalAsked = true;
+              return false; // user declines
+            },
           },
-        },
-      })
-    );
-    // The policy never upgrades a command to auto-run: approval was still asked,
-    // and because the user declined, nothing executed.
-    expect(approvalAsked).toBe(true);
-    expect(result).toMatch(/declined/i);
-  });
+        })
+      );
+      expect(approvalAsked).toBe(true);
+      expect(result).toMatch(/declined/i);
+    });
+  }
 
   it("runShell resolves < 5s with code 42 when stdin is closed", async () => {
     const start = Date.now();
