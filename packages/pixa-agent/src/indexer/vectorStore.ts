@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { embed } from "../providers/embeddings";
 import type { Chunk } from "./chunker";
 import { isIndexablePath } from "./indexablePaths";
+import { tryResolveInWorkspace } from "../tools/paths";
 
 // MiniLM cosine scores for NL-query vs code-chunk pairs are often 0.15–0.40 even
 // when the match is correct; unrelated pairs can be negative. Keep this low.
@@ -60,6 +61,38 @@ function chunkMetaFromChunk(chunk: Chunk): ChunkMetadata {
 }
 
 /**
+ * Ensures .pixa/ is added to .gitignore.
+ * Returns true if .gitignore was mutated, false if it was already present or disabled.
+ */
+export function ensureGitignored(
+  workspaceRoot: string,
+  options?: { enabled?: boolean }
+): boolean {
+  if (options?.enabled === false) return false;
+  const gitignorePath = path.join(workspaceRoot, ".gitignore");
+  const entry = ".pixa/";
+  try {
+    if (!fs.existsSync(gitignorePath)) {
+      fs.writeFileSync(gitignorePath, `${entry}\n`);
+      return true;
+    }
+    const existing = fs.readFileSync(gitignorePath, "utf8");
+    const alreadyPresent = existing
+      .split(/\r?\n/)
+      .some((line) => line.trim() === entry || line.trim() === ".pixa");
+    if (!alreadyPresent) {
+      const needsNewline = existing.length > 0 && !existing.endsWith("\n");
+      fs.appendFileSync(gitignorePath, `${needsNewline ? "\n" : ""}${entry}\n`);
+      return true;
+    }
+    return false;
+  } catch {
+    // Non-fatal — worst case the .pixa folder shows up as untracked in git status.
+    return false;
+  }
+}
+
+/**
  * Thin wrapper around Vectra's LocalIndex. Nothing outside this file should
  * import from "vectra" directly.
  */
@@ -78,7 +111,6 @@ export class VectorStore {
 
   private async init(): Promise<void> {
     fs.mkdirSync(this.folderPath, { recursive: true });
-    this.ensureGitignored();
     this.writeReadmeIfMissing();
 
     if (!(await this.index.isIndexCreated())) {
@@ -104,27 +136,6 @@ export class VectorStore {
       fs.mkdirSync(this.folderPath, { recursive: true });
       this.index = new LocalIndex(this.folderPath);
       await this.index.createIndex();
-    }
-  }
-
-  private ensureGitignored(): void {
-    const gitignorePath = path.join(this.workspaceRoot, ".gitignore");
-    const entry = ".pixa/";
-    try {
-      if (!fs.existsSync(gitignorePath)) {
-        fs.writeFileSync(gitignorePath, `${entry}\n`);
-        return;
-      }
-      const existing = fs.readFileSync(gitignorePath, "utf8");
-      const alreadyPresent = existing
-        .split(/\r?\n/)
-        .some((line) => line.trim() === entry || line.trim() === ".pixa");
-      if (!alreadyPresent) {
-        const needsNewline = existing.length > 0 && !existing.endsWith("\n");
-        fs.appendFileSync(gitignorePath, `${needsNewline ? "\n" : ""}${entry}\n`);
-      }
-    } catch {
-      // Non-fatal — worst case the .pixa folder shows up as untracked in git status.
     }
   }
 
@@ -239,8 +250,11 @@ export class VectorStore {
    * no longer duplicate it into the index. Returns "" if the file no longer
    * exists or the line range is out of bounds. */
   private readTextForChunk(filePath: string, startLine: number, endLine: number): string {
+    // filePath comes from index.json on disk, which a cloned repo can ship —
+    // jail it like any other untrusted path.
+    const abs = tryResolveInWorkspace(this.workspaceRoot, filePath);
+    if (!abs) return "";
     try {
-      const abs = path.join(this.workspaceRoot, filePath);
       const content = fs.readFileSync(abs, "utf8");
       const lines = content.split(/\r?\n/);
       return lines.slice(startLine, endLine + 1).join("\n");
@@ -303,6 +317,7 @@ export class VectorStore {
 
   async isFileIndexed(relPath: string): Promise<boolean> {
     await this.ready;
+    if (!isIndexablePath(relPath)) return false;
     const ids = this.fileToIds.get(relPath);
     return !!ids && ids.size > 0;
   }

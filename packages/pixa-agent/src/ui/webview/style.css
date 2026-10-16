@@ -130,23 +130,34 @@ button:hover { background: var(--vscode-button-hoverBackground); }
   gap: 8px;
 }
 
-.msg { padding: 6px 10px; border-radius: 6px; word-wrap: break-word; overflow-wrap: anywhere; }
+.msg { padding: 12px 8px; word-wrap: break-word; overflow-wrap: anywhere; }
 .msg-role {
-  font-size: 0.75em;
-  font-weight: 700;
+  font-size: 0.85em;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--vscode-descriptionForeground);
-  margin-bottom: 3px;
+  letter-spacing: 0.5px;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+}
+.msg.assistant .msg-role {
+  color: var(--vscode-charts-orange, #d18616);
 }
 .msg.user {
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-panel-border);
-  border-left: 2px solid var(--vscode-focusBorder);
-  max-width: 96%;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.05));
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+  border-radius: 6px;
+  margin: 8px 0;
 }
-.msg.assistant { background: transparent; padding-left: 10px; }
-.msg-body { line-height: 1.5; }
+.msg.user .msg-role {
+  display: block;
+}
+.msg.assistant { 
+  background: transparent; 
+  margin: 8px 0;
+}
+.msg-body { line-height: 1.6; font-size: 1.02em; }
 .msg.status { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 0.9em; }
 .msg.cost { color: var(--vscode-descriptionForeground); font-size: 0.8em; padding: 0 8px; }
 
@@ -168,8 +179,11 @@ button:hover { background: var(--vscode-button-hoverBackground); }
 .plan-steps { margin: 0; padding-left: 22px; }
 .plan-steps li { margin: 2px 0; }
 .msg.error {
-  background: var(--vscode-inputValidation-errorBackground, rgba(200,0,0,0.15));
-  border: 1px solid var(--vscode-inputValidation-errorBorder, #c00);
+  background: var(--vscode-inputValidation-errorBackground, rgba(200, 0, 0, 0.05));
+  border-left: 3px solid var(--vscode-inputValidation-errorBorder, #c00);
+  border-radius: 4px;
+  color: var(--vscode-errorForeground);
+  font-size: 0.95em;
 }
 
 .msg pre {
