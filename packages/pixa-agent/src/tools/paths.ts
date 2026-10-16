@@ -15,3 +15,16 @@ export function resolveInWorkspace(root: string, p: string): string {
   }
   return abs;
 }
+
+/**
+ * Non-throwing resolveInWorkspace: the absolute path, or null if `p` escapes
+ * the workspace. For paths Pixa didn't produce itself — chat @-mentions,
+ * on-disk index metadata — where an escape means "treat as not found".
+ */
+export function tryResolveInWorkspace(root: string, p: string): string | null {
+  try {
+    return resolveInWorkspace(root, p);
+  } catch {
+    return null;
+  }
+}
