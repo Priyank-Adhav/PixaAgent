@@ -19,6 +19,8 @@ export interface ChatMessage {
   toolCalls?: ToolCall[];
   /** Present on tool-result messages; matches the originating ToolCall.id. */
   toolCallId?: string;
+  /** Present on tool-result messages; records which tool produced the result. */
+  toolName?: string;
 }
 
 /** JSON-Schema-described tool exposed to the model. */

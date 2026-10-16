@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { embed } from "../providers/embeddings";
 import type { Chunk } from "./chunker";
 import { isIndexablePath } from "./indexablePaths";
+import { tryResolveInWorkspace } from "../tools/paths";
 
 // MiniLM cosine scores for NL-query vs code-chunk pairs are often 0.15–0.40 even
 // when the match is correct; unrelated pairs can be negative. Keep this low.
@@ -302,8 +303,11 @@ export class VectorStore {
    * no longer duplicate it into the index. Returns "" if the file no longer
    * exists or the line range is out of bounds. */
   private async readTextForChunk(filePath: string, startLine: number, endLine: number): Promise<string> {
+    // filePath comes from index.json on disk, which a cloned repo can ship —
+    // jail it like any other untrusted path.
+    const abs = tryResolveInWorkspace(this.workspaceRoot, filePath);
+    if (!abs) return "";
     try {
-      const abs = path.join(this.workspaceRoot, filePath);
       const content = await fs.promises.readFile(abs, "utf8");
       const lines = content.split(/\r?\n/);
       return lines.slice(startLine, endLine + 1).join("\n");
@@ -366,6 +370,7 @@ export class VectorStore {
 
   async isFileIndexed(relPath: string): Promise<boolean> {
     await this.ready;
+    if (!isIndexablePath(relPath)) return false;
     const ids = this.fileToIds.get(relPath);
     return !!ids && ids.size > 0;
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { terminalTools } from "../src/tools/terminal";
+import { terminalTools, runShell } from "../src/tools/terminal";
 import type { ToolContext } from "../src/tools/types";
 
 /**
@@ -35,22 +35,44 @@ describe("run_command sandbox wiring", () => {
     expect(approvalAsked).toBe(false); // must not even prompt for a denied command
   });
 
-  it("still requires approval for a non-denied command (no auto-run)", async () => {
-    let approvalAsked = false;
-    const result = await runCommand.execute(
-      { command: "git status" }, // an "allow" verdict in the policy
-      ctx({
-        approvals: {
-          requestApproval: async () => {
-            approvalAsked = true;
-            return false; // user declines
+  // "low-risk" is informational only: the policy never upgrades a command to
+  // auto-run. Approval is still asked and, because the user declines, nothing runs.
+  for (const command of ["git status", "ls -la", "echo hello", "cat package.json", "node --version"]) {
+    it(`still requires approval for a low-risk command (no auto-run): ${command}`, async () => {
+      let approvalAsked = false;
+      const result = await runCommand.execute(
+        { command },
+        ctx({
+          approvals: {
+            requestApproval: async () => {
+              approvalAsked = true;
+              return false; // user declines
+            },
           },
-        },
-      })
+        })
+      );
+      expect(approvalAsked).toBe(true);
+      expect(result).toMatch(/declined/i);
+    });
+  }
+
+  it("runShell resolves < 5s with code 42 when stdin is closed", async () => {
+    const start = Date.now();
+    const result = await runShell(
+      'node -e "process.stdin.on(\'end\',()=>process.exit(42));process.stdin.resume()"',
+      process.cwd(),
+      3_000
     );
-    // The policy never upgrades a command to auto-run: approval was still asked,
-    // and because the user declined, nothing executed.
-    expect(approvalAsked).toBe(true);
-    expect(result).toMatch(/declined/i);
+    const duration = Date.now() - start;
+    expect(duration).toBeLessThan(5000);
+    expect(result.code).toBe(42);
+  });
+
+  it("annotates tool result with warning when an interactive command is detected", async () => {
+    const result = await runCommand.execute(
+      { command: "pause" },
+      ctx({ approvals: { requestApproval: async () => true } })
+    );
+    expect(result).toMatch(/Warning: Command appeared interactive/i);
   });
 });

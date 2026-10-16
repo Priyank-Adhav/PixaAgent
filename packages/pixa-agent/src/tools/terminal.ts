@@ -1,23 +1,25 @@
 import { exec } from "node:child_process";
 import type { Tool } from "./types";
 import { resolveInWorkspace } from "./paths";
-import { evaluateCommand } from "../security/sandbox";
+import { evaluateCommand, detectInteractive } from "../security/sandbox";
 
 const OUTPUT_CAP = 8000;
 
 export function runShell(
   command: string,
-  cwd: string
+  cwd: string,
+  timeoutMs = 120_000
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    exec(
+    const child = exec(
       command,
-      { cwd, timeout: 120_000, maxBuffer: 1024 * 1024, windowsHide: true },
+      { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
       (err, stdout, stderr) => {
         const code = err ? (typeof (err as any).code === "number" ? (err as any).code : 1) : 0;
         resolve({ code, stdout: stdout ?? "", stderr: stderr ?? "" });
       }
     );
+    child.stdin?.end();
   });
 }
 
@@ -47,8 +49,9 @@ const runCommand: Tool = {
     const cwd = args.cwd ? resolveInWorkspace(ctx.workspaceRoot, args.cwd) : ctx.workspaceRoot;
     // Sandbox policy first: a known-destructive command is hard-blocked before
     // the user is even asked, so it can't be run by an over-eager Approve click.
-    // Every non-denied command still goes through the normal approval flow —
-    // the policy only ever *removes* the option to run, never adds an auto-run.
+    // Every non-denied command — "low-risk" included — still goes through the
+    // normal approval flow: the policy only ever *removes* the option to run,
+    // never adds an auto-run.
     const verdict = evaluateCommand(args.command);
     if (verdict.verdict === "deny") {
       return `Command blocked by Pixa's safety policy: ${verdict.reason} It was not run. Suggest a safer alternative.`;
@@ -56,7 +59,12 @@ const runCommand: Tool = {
     const approved = await ctx.approvals.requestApproval("command", args.command);
     if (!approved) return "User declined to run this command. Ask before trying an alternative.";
     const result = await runShell(args.command, cwd);
-    return formatShellResult(result);
+    let output = formatShellResult(result);
+    const interactive = detectInteractive(args.command);
+    if (interactive) {
+      output += `\n\n[Warning: Command appeared interactive (${interactive}). Stdin was closed immediately to prevent indefinite blocking.]`;
+    }
+    return output;
   },
 };
 

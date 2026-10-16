@@ -173,3 +173,94 @@ This document records completed remediation branches after they are implemented.
   - Dev Host checks: index a 1000–5000 file generated workspace, save a file during indexing (no lock error), cancel at about 50% and then Rebuild (it resumes).
   - One sync stringify per batch remains. If lag is still high, a follow-up could switch vectra codecs or move embedding and serialization to a `worker_thread`.
   - If `indexFile` and a full index run at the same time, each may overwrite the other's manifest entry. That is harmless: the file is simply re-indexed next run.
+## Branch: `fix/ambiguous-file-mentions`
+
+- **ID:** R-011 (and R-013, found while working on it)
+- **Owner:** Abhishek Abhang
+- **Target issue:** R-011: if an `@file` mention wasn't an exact workspace path, `resolveMentions` attached the first `findFiles` hit. With duplicate names (`src/a/config.ts`, `src/b/config.ts`), `@config.ts` attached an arbitrary file without telling the user or the model. R-013: the exact-match branch built the path with `path.join` instead of `resolveInWorkspace()`, so `@../secret.txt` read a file outside the workspace and sent it to the model.
+- **Evidence status:** Code-plausible (manual VS Code validation pending)
+- **Files changed:**
+  - `packages/pixa-agent/src/agent/mentions.ts`
+  - `packages/pixa-agent/src/ui/chatViewProvider.ts`
+  - `packages/pixa-agent/test/mentions.test.ts`
+- **Summary of fix:** New pure functions in `mentions.ts`:
+  - `normalizeMention` converts `\` to `/` and strips a leading `./` or `/`.
+  - `isTraversalMention` flags `..` segments, drive letters and `~`.
+  - `pickMentionMatch` keeps segment-boundary suffix matches only (`config.ts` never matches `myconfig.ts`). An exact root-relative path wins; several matches are returned as `ambiguous`, shallowest first, capped at `MAX_AMBIGUOUS_CANDIDATES = 10` with a `truncated` flag.
+
+  `formatAttachedFiles` takes an optional third argument and renders ambiguous mentions as `<file path="…" error="ambiguous" candidates="…" />`.
+
+  `resolveMentions` now:
+  - rejects traversal mentions up front;
+  - resolves the exact path through `resolveInWorkspace()`;
+  - searches with the indexer's `EXCLUDE` list instead of only `node_modules`, and drops results outside the workspace root;
+  - opens a QuickPick for duplicates. Stop cancels the QuickPick. If it is dismissed, nothing is attached and the ambiguous tag goes to the model.
+  - posts a `status` line in the chat whenever the attached file differs from what was typed.
+- **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (221 passing, +16 new tests in `mentions.test.ts`); `npm run compile -w pixa-agent`. Manual Dev Host validation is not done yet.
+- **Remaining follow-up:** Manual validation:
+  1. Duplicate `config.ts` + `@config.ts` → QuickPick appears and a status line shows the chosen path.
+  2. Dismiss the QuickPick → the agent asks which file you meant.
+  3. `@a/config.ts` → attached without a prompt.
+  4. `@../outside.txt` → not found, and its contents are not sent.
+
+  R-013 touches a load-bearing safety rule — call it out in the PR description. Behaviour change: the search now skips `dist/`, `build/`, `.git/`, `.pixa/` etc. (exact paths such as `@dist/x.js` still work). Possible follow-up: `@`-autocomplete in the chat input. Overlaps R-003/R-007 in `chatViewProvider.ts` (they change `applyChange`; this changes `resolveMentions`), so rebase on whichever merges first.
+## Branch: `fix/terminal-sandbox-policy-semantics`
+
+- **ID:** R-012
+- **Owner:** Abhishek Abhang
+- **Target issue:** The sandbox policy header said an `allow` verdict "runs without asking", and the security audit log recorded such commands as "auto-allowed". In fact `run_command` asks for approval for every command that isn't denied, which is what CONTRIBUTING's load-bearing rules require. The "safe" list also matched commands that are not read-only, so the label overstated what they do.
+- **Evidence status:** Confirmed. New tests run against the R-008 base classified 18 non-read-only commands as `allow`: chaining (`ls && rm -rf src`), redirection (`echo x > src/index.ts`), substitution, `find -delete`/`-exec`, `git branch -D`, `git remote add/remove`, `git diff --output=…`, `rg --pre`, and `npm test`.
+- **Files changed:**
+  - `packages/pixa-agent/src/security/sandbox.ts`
+  - `packages/pixa-agent/src/security/audit.ts`
+  - `packages/pixa-agent/src/tools/terminal.ts`
+  - `packages/pixa-agent/test/sandbox.test.ts`
+  - `packages/pixa-agent/test/terminalSandbox.test.ts`
+  - `packages/pixa-agent/test/security.test.ts`
+- **Summary of fix:** Decision: keep approval for every non-denied command; no auto-run.
+  - The `CommandVerdict` value `"allow"` is renamed to `"low-risk"`, in the audit `outcome` type too. The header doc now says only `deny` changes behaviour and that `low-risk` is informational.
+  - Audit reasons now read "Read-only/informational command — still requires user approval." and "Not on the low-risk list — requires user approval."
+  - `SAFE_PREFIXES` is renamed to `LOW_RISK_PATTERNS` and tightened. A `NOT_LOW_RISK` guard sends anything with `; & | < >`, a backtick, `$(`, a newline, `--output` or `--pre` to `confirm`. `find` and `npm test`/`npm run test` are removed. `git branch` and `git remote` are low-risk only in their listing forms.
+  - `terminal.ts` changes only in a comment. There is no behaviour change: the same commands are blocked and the same commands prompt.
+- **Validation performed:** `npm run typecheck -w pixa-agent`; `npm run test:offline -w pixa-agent` (244 passing, +27 vs the R-008 base); `npm run compile -w pixa-agent`. Manual Dev Host validation is not done yet.
+- **Remaining follow-up:**
+  - Manual check: `git status` and `ls && echo hi` both show the approval card, and the audit channel shows `[LOW-RISK]` / `[CONFIRM]` with no "auto-allowed".
+  - Possible follow-up: show the verdict as a "read-only" / "may modify files" badge on the approval card. That needs `ApprovalService.requestApproval`, `events.ts` and `main.js`, and overlaps R-003/R-007.
+  - Stacked on R-008. `main`'s three docs commits were cherry-picked onto this branch so the tracker matches `main`. After R-008 merges, run `git rebase --onto origin/main origin/fix/interactive-command-handling` and git will drop them as already applied.
+## Branch: `fix/workspace-jail-hardening`
+
+- **ID:** R-013
+- **Owner:** Abhishek Abhang
+- **Target issue:** Two file reads bypassed the `resolveInWorkspace()` jail, a load-bearing rule in CONTRIBUTING:
+  - **(A) @-mentions.** `ChatViewProvider.resolveMentions` built the exact-match path with `path.join`, so `@../secret.txt` read a file outside the workspace and attached it to the model request.
+  - **(B) Index metadata.** `VectorStore.readTextForChunk` joined the `filePath` stored in `.pixa/index/index.json` onto the workspace root. A cloned repo can ship that file, and since R-009 an existing `.pixa/index/` auto-enables semantic search. An entry like `src/../../secret.txt` got past `isIndexablePath` (which only rejected paths *starting* with `..`), so `semantic_search` returned the outside file's contents to the model.
+- **Evidence status:** Confirmed. A new test on `main` code had `readTextForChunk("src/../../secret.txt")` return the contents of a file next to the workspace, and new `isIndexablePath` tests showed traversal and absolute paths being accepted.
+- **Files changed:**
+  - `packages/pixa-agent/src/tools/paths.ts`
+  - `packages/pixa-agent/src/indexer/indexablePaths.ts`
+  - `packages/pixa-agent/src/indexer/vectorStore.ts`
+  - `packages/pixa-agent/src/ui/chatViewProvider.ts`
+  - `CONTRIBUTING.md`
+  - `packages/pixa-agent/test/paths.test.ts`
+  - `packages/pixa-agent/test/indexablePaths.test.ts` (new)
+  - `packages/pixa-agent/test/vectorStore.jail.test.ts` (new)
+- **Summary of fix:**
+  - New `tryResolveInWorkspace()`: the same jail as `resolveInWorkspace()`, but it returns `null` instead of throwing.
+  - `isIndexablePath` now also rejects any `..` segment, a leading `/` or `\`, and drive letters. Crafted index entries are filtered from `query`, `listIndexedFiles` and `isFileIndexed`, and `purgeNonIndexableFiles` deletes them on the next index run.
+  - `readTextForChunk` resolves through the jail; an escaping path reads as empty text.
+  - `resolveMentions` strips a leading `/` or `./` (keeping `@/src/x.ts` root-relative), then resolves the exact path through the jail. An escaping mention is reported as not found.
+  - Suffix-search hits outside this workspace root (multi-root windows) are skipped.
+  - CONTRIBUTING now says that chat mentions, model arguments and on-disk data are untrusted paths.
+- **Validation performed:**
+  - `npm run typecheck -w pixa-agent`.
+  - `npm run test:offline -w pixa-agent`: 246 passing (238 on `main`, so 8 new tests).
+  - `npm test -w pixa-agent`: 255 passing, 1 skipped, the same skip as on `main`.
+  - `npm run compile -w pixa-agent`.
+  - Commits `d6f6184`, `08736db` and `3e171fd` add tests that fail on purpose until the commit after each. Squash them into their fixes if every commit must be green.
+  - Manual Dev Host validation is not done yet.
+- **Remaining follow-up:**
+  - Manual check 1: put `secret.txt` beside the workspace and send `@../secret.txt`. It should be reported as not found and the contents should not be sent.
+  - Manual check 2: in a scratch repo, add a crafted `.pixa/index/index.json` with a `src/../../secret.txt` entry (create it with the `vectorStore.jail.test.ts` setup). `semantic_search` must not return the secret, and the entry should be gone after the initial index.
+  - Rebase R-011 (`fix/ambiguous-file-mentions`) after this merges. Its commit `76f7312` covers the same mention fix; resolve `resolveMentions` to R-011's flow using `tryResolveInWorkspace`, and `git rebase --skip` if that commit becomes empty.
+  - R-010 makes `readTextForChunk` async; whichever branch merges second keeps both the async read and the jail.
+  - Out of scope: a symlink inside the workspace that points outside it (an existing gap in `resolveInWorkspace`), and whether a committed `.pixa/index/` should auto-enable semantic search at all. After this fix, such an index can only inject in-repo search results.

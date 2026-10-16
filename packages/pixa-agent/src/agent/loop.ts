@@ -278,7 +278,7 @@ export class AgentLoop {
 
           // Results are recorded in call order so each pairs with its tool_call_id.
           batch.forEach((call, i) => {
-            this.history.push({ role: "tool", content: outputs[i], toolCallId: call.id });
+            this.history.push({ role: "tool", content: outputs[i], toolCallId: call.id, toolName: call.name });
             ctx.emit({ type: "tool-end", callId: call.id, result: truncateForUi(outputs[i]) });
           });
           ctx.emit({
