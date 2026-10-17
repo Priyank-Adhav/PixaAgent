@@ -129,4 +129,20 @@ describe("pruneHistory", () => {
     expect(pruned[pruned.length - 1].role).toBe("user");
     expect(pruned[pruned.length - 1].content).toContain("x");
   });
+  it("never produces an orphaned tool result at the start of pruned history (R-001)", () => {
+      const history = [
+        msg("user", "x".repeat(400)),
+        msg("assistant", "y".repeat(400), {
+          toolCalls: [{ id: "call_1", name: "read_file", arguments: "{}" }],
+        }),
+        msg("tool", "ok", { toolCallId: "call_1" }),
+        msg("user", "final prompt"),
+      ];
+      // Under budget = 50 tokens:
+      // slice(0) = 237 tokens, slice(1) = 129 tokens, slice(2) = 21 tokens <= 50.
+      // The baseline code drops the assistant call but retains the tool result,
+      // producing an orphaned tool message at index 0.
+      const pruned = pruneHistory(history, 50);
+      expect(pruned[0].role).not.toBe("tool");
+    });
 });
