@@ -95,7 +95,8 @@ pruned = [
 
 <video src="media/R001_before_context_pruning_amnesia.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R001_before_context_pruning_amnesia.mp4](media/R001_before_context_pruning_amnesia.mp4)  
+**Direct Recording Link:** https://youtube.com/shorts/BU3evOfTP2U?feature=share
+
 *Video: Follow-up prompt triggers amnesia and repetitive tool-search loop.*
 
 ---
@@ -121,7 +122,7 @@ pruned = [
 
 <video src="media/R001_after_memory_retention.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R001_after_memory_retention.mp4](media/R001_after_memory_retention.mp4)  
+**Direct Recording Link:** https://youtube.com/shorts/Ro9jeYC5u1U?feature=share  
 *Video: Prompt 2 immediately answered from conversational memory with zero tool loops.*
 
 ---
