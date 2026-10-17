@@ -93,9 +93,9 @@ pruned = [
 
 **Screen Recording (BEFORE):**
 
-<video src="media/R001_before_context_pruning_amnesia.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/BU3evOfTP2U/hqdefault.jpg)](https://youtube.com/shorts/BU3evOfTP2U?feature=share)
 
-**Direct Recording Link:** https://youtube.com/shorts/BU3evOfTP2U?feature=share
+[Direct Link: https://youtube.com/shorts/BU3evOfTP2U](https://youtube.com/shorts/BU3evOfTP2U?feature=share)
 
 *Video: Follow-up prompt triggers amnesia and repetitive tool-search loop.*
 
@@ -120,9 +120,10 @@ pruned = [
 
 **Screen Recording (AFTER):**
 
-<video src="media/R001_after_memory_retention.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/Ro9jeYC5u1U/hqdefault.jpg)](https://youtube.com/shorts/Ro9jeYC5u1U?feature=share)
 
-**Direct Recording Link:** https://youtube.com/shorts/Ro9jeYC5u1U?feature=share  
+[Direct Link: https://youtube.com/shorts/Ro9jeYC5u1U](https://youtube.com/shorts/Ro9jeYC5u1U?feature=share)
+
 *Video: Prompt 2 immediately answered from conversational memory with zero tool loops.*
 
 ---
@@ -180,9 +181,10 @@ if (pendingFiles.length === 0) {
 
 **Screen Recording (AFTER):**
 
-<video src="media/R002_after_autohide_demo.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/crcaMreC880/hqdefault.jpg)](https://youtube.com/shorts/crcaMreC880?feature=share)
 
-**Direct Recording Link:** https://youtube.com/shorts/crcaMreC880?feature=share
+[Direct Link: https://youtube.com/shorts/crcaMreC880](https://youtube.com/shorts/crcaMreC880?feature=share)
+
 *Video: Clicking Apply immediately dismisses the file and smoothly collapses the changeset drawer.*
 
 ---
@@ -238,9 +240,10 @@ In `packages/pixa-agent/src/ui/chatViewProvider.ts`:
 
 **Screen Recording (BEFORE):**
 
-<video src="media/R003_before_transcript_data_loss.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/5L1IbMgINiY/hqdefault.jpg)](https://youtube.com/shorts/5L1IbMgINiY?feature=share)
 
-**Direct Recording Link:** https://youtube.com/shorts/5L1IbMgINiY?feature=share
+[Direct Link: https://youtube.com/shorts/5L1IbMgINiY](https://youtube.com/shorts/5L1IbMgINiY?feature=share)
+
 *Video: Reloading the window wipes tool turns from chat history.*
 
 ---
@@ -258,9 +261,10 @@ In `packages/pixa-agent/src/ui/chatViewProvider.ts`:
 
 **Screen Recording (AFTER):**
 
-<video src="media/R003_after_transcript_continuity.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/rXN2QsfuBoM/hqdefault.jpg)](https://youtube.com/shorts/rXN2QsfuBoM?feature=share)
 
-**Direct Recording Link:** https://youtube.com/shorts/rXN2QsfuBoM?feature=share
+[Direct Link: https://youtube.com/shorts/rXN2QsfuBoM](https://youtube.com/shorts/rXN2QsfuBoM?feature=share)
+
 *Video: Reloading the window cleanly restores tool execution badges without data loss.*
 
 ---
@@ -328,9 +332,10 @@ Build modular math utilities with unit test coverage.
 
 **Screen Recording (AFTER):**
 
-<video src="media/R004_after_task_state_planning.mp4" controls width="100%"></video>
+[![Watch Screen Recording on YouTube](https://img.youtube.com/vi/q_i69tfQgLw/hqdefault.jpg)](https://youtu.be/q_i69tfQgLw)
 
-**Direct Recording Link:** https://youtu.be/q_i69tfQgLw 
+[Direct Link: https://youtu.be/q_i69tfQgLw](https://youtu.be/q_i69tfQgLw)
+
 *Video: Agent creates .pixa/task-state.md, checks off items progressively, and pauses gracefully.*
 
 ---
