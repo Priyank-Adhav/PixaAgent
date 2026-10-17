@@ -182,7 +182,7 @@ if (pendingFiles.length === 0) {
 
 <video src="media/R002_after_autohide_demo.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R002_after_autohide_demo.mp4](media/R002_after_autohide_demo.mp4)  
+**Direct Recording Link:** https://youtube.com/shorts/crcaMreC880?feature=share
 *Video: Clicking Apply immediately dismisses the file and smoothly collapses the changeset drawer.*
 
 ---
@@ -240,7 +240,7 @@ In `packages/pixa-agent/src/ui/chatViewProvider.ts`:
 
 <video src="media/R003_before_transcript_data_loss.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R003_before_transcript_data_loss.mp4](media/R003_before_transcript_data_loss.mp4)  
+**Direct Recording Link:** https://youtube.com/shorts/5L1IbMgINiY?feature=share
 *Video: Reloading the window wipes tool turns from chat history.*
 
 ---
@@ -260,7 +260,7 @@ In `packages/pixa-agent/src/ui/chatViewProvider.ts`:
 
 <video src="media/R003_after_transcript_continuity.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R003_after_transcript_continuity.mp4](media/R003_after_transcript_continuity.mp4)  
+**Direct Recording Link:** https://youtube.com/shorts/rXN2QsfuBoM?feature=share
 *Video: Reloading the window cleanly restores tool execution badges without data loss.*
 
 ---
@@ -330,7 +330,7 @@ Build modular math utilities with unit test coverage.
 
 <video src="media/R004_after_task_state_planning.mp4" controls width="100%"></video>
 
-**Direct Recording Link:** [media/R004_after_task_state_planning.mp4](media/R004_after_task_state_planning.mp4)  
+**Direct Recording Link:** https://youtu.be/q_i69tfQgLw 
 *Video: Agent creates .pixa/task-state.md, checks off items progressively, and pauses gracefully.*
 
 ---
