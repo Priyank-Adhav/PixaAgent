@@ -98,7 +98,7 @@ This document records completed remediation branches after they are implemented.
 ## Branch: `fix/stale-diff-apply-guard`
 
 - **ID:** R-007
-- **Owner:** Vasun
+- **Owner:** Vasundhara Dixit
 - **Target issue:** Applying a staged change silently overwrote the file when the user had edited and saved it on disk after the change was staged. `originalContent` was captured at staging time but never checked before write.
 - **Evidence status:** Code-plausible (manual VS Code validation pending)
 - **Files changed:**
@@ -112,7 +112,7 @@ This document records completed remediation branches after they are implemented.
 ## Branch: `fix/interactive-command-handling`
 
 - **ID:** R-008
-- **Owner:** Vasun
+- **Owner:** Vasundhara Dixit
 - **Target issue:** A terminal command that reads from stdin (e.g. `pause`, `read -p`, `python -i`) blocked the agent for the full 120s timeout before failing, with no interactive-command detection.
 - **Evidence status:** Confirmed (T5 reproduction — `pause` blocked 5s to kill, exited in ~50ms with stdin closed)
 - **Files changed:**
@@ -127,7 +127,7 @@ This document records completed remediation branches after they are implemented.
 ## Branch: `fix/index-activation-mutations`
 
 - **ID:** R-009
-- **Owner:** Vasun
+- **Owner:** Vasundhara Dixit
 - **Target issue:** Opening a folder with Pixa installed mutated the workspace before any user action: `.pixa/` and `.pixa/index/` created unconditionally, `.gitignore` written or appended, `.vscode/settings.json` written by `hidePixaFolderFromExplorer`.
 - **Evidence status:** Code-plausible (manual clean-repo validation pending)
 - **Files changed:**
