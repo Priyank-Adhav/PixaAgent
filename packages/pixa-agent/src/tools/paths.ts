@@ -19,7 +19,7 @@ export function resolveInWorkspace(root: string, p: string): string {
   if (escapes(rootAbs, abs)) {
     throw new Error(`Path escapes workspace: ${p}`);
   }
-  if (escapes(realPathOf(rootAbs, p), realPathOf(abs, p))) {
+  if (escapes(realRootOf(rootAbs, p), realPathOf(abs, p))) {
     throw new Error(`Path escapes workspace (symlink): ${p}`);
   }
   return abs;
@@ -36,6 +36,20 @@ export function tryResolveInWorkspace(root: string, p: string): string | null {
   } catch {
     return null;
   }
+}
+
+// realpath is ~80µs on Windows and the indexer calls the jail several times per
+// file. The workspace root doesn't move during a session, so resolve it once;
+// the target is still resolved on every call.
+const realRoots = new Map<string, string>();
+
+function realRootOf(rootAbs: string, p: string): string {
+  let real = realRoots.get(rootAbs);
+  if (real === undefined) {
+    real = realPathOf(rootAbs, p);
+    realRoots.set(rootAbs, real);
+  }
+  return real;
 }
 
 function escapes(root: string, abs: string): boolean {
