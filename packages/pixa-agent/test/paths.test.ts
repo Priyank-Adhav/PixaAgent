@@ -107,6 +107,14 @@ describe("resolveInWorkspace: symlinks", () => {
     expect(() => resolveInWorkspace(ws, "dangling")).toThrow(/escapes workspace/);
   });
 
+  it("rejects a write under a directory link whose target was removed", () => {
+    const gone = path.join(outer, "gone");
+    fs.mkdirSync(gone);
+    linkDir(gone, path.join(ws, "dangling-dir"));
+    fs.rmSync(gone, { recursive: true });
+    expect(() => resolveInWorkspace(ws, "dangling-dir/new.txt")).toThrow(/escapes workspace/);
+  });
+
   it("allows a link that stays inside the workspace and returns the lexical path", () => {
     linkDir(path.join(ws, "src"), path.join(ws, "lib"));
     expect(resolveInWorkspace(ws, "lib/a.ts")).toBe(path.join(ws, "lib", "a.ts"));
