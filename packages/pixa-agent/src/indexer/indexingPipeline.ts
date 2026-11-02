@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { EXCLUDE, MAX_FILES, isIndexablePath } from "./workspaceIndexer";
 import { chunkFile, type Chunk } from "./chunker";
 import { yieldToEventLoop, type VectorStore } from "./vectorStore";
-import { resolveInWorkspace } from "../tools/paths";
+import { tryResolveInWorkspace } from "../tools/paths";
 import { redactSecrets } from "../security/redact";
 import { startIndexingMetrics, type IndexingMetrics } from "./indexingMetrics";
 
@@ -67,7 +67,8 @@ async function getSymbolsForFile(uri: vscode.Uri): Promise<vscode.DocumentSymbol
 
 /** Reads and chunks one file. Null if it can't be read. */
 async function prepareFile(workspaceRoot: string, relPath: string): Promise<Chunk[] | null> {
-  const abs = resolveInWorkspace(workspaceRoot, relPath);
+  const abs = tryResolveInWorkspace(workspaceRoot, relPath);
+  if (!abs) return null;
 
   let content: string;
   try {
@@ -181,9 +182,17 @@ async function indexWorkspaceInner(
     await maybeYield();
 
     const relPath = relPaths[i];
+
+    // findFiles follows symlinks, so a link pointing outside the workspace
+    // shows up here. Skip it, and leave it unseen so a stale earlier entry is
+    // dropped below, rather than aborting the run.
+    const abs = tryResolveInWorkspace(workspaceRoot, relPath);
+    if (!abs) {
+      progress(relPath, i);
+      continue;
+    }
     seenPaths.add(relPath);
 
-    const abs = resolveInWorkspace(workspaceRoot, relPath);
     let stat: fs.Stats;
     try {
       stat = await fs.promises.stat(abs);
@@ -274,7 +283,8 @@ export async function indexFile(
 
   if (!isIndexablePath(relPath)) return forget();
 
-  const abs = resolveInWorkspace(workspaceRoot, relPath);
+  const abs = tryResolveInWorkspace(workspaceRoot, relPath);
+  if (!abs) return forget();
   let stat: fs.Stats;
   try {
     stat = await fs.promises.stat(abs);
