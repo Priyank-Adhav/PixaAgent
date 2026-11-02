@@ -12,7 +12,9 @@ vi.mock("vscode", async () => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === ".pixa") continue;
       const p = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(p, out);
+      // Like VS Code's findFiles (search.followSymlinks defaults to true).
+      const isDir = entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(p).isDirectory());
+      if (isDir) walk(p, out);
       else out.push({ fsPath: p });
     }
     return out;
@@ -98,6 +100,25 @@ describe("indexWorkspace (R-010)", () => {
 
     expect(await store.isFileIndexed("src/f1.ts")).toBe(false);
     expect(readManifest()).not.toHaveProperty("src/f1.ts");
+  });
+
+  it("skips files behind a link that points outside instead of aborting the run (R-013)", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pixa-pipeline-outside-"));
+    try {
+      fs.writeFileSync(path.join(outside, "secret.ts"), "export const SECRET = 1;\n");
+      fs.symlinkSync(outside, path.join(state.root, "link-dir"), process.platform === "win32" ? "junction" : "dir");
+      writeFiles(2);
+      const store = new VectorStore(state.root);
+
+      const result = await indexWorkspace(state.root, store);
+      await indexFile(state.root, store, "link-dir/secret.ts");
+
+      expect(result.filesIndexed).toBe(2);
+      expect(await store.isFileIndexed("link-dir/secret.ts")).toBe(false);
+      expect(readManifest()).not.toHaveProperty("link-dir/secret.ts");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("on cancel, keeps committed work, does not delete unreached files, and resumes incrementally", async () => {
