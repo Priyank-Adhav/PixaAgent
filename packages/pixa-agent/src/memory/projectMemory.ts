@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { ensureGitignored } from "../indexer/vectorStore";
 
 export interface MemoryNote {
   id: string;
@@ -29,6 +30,7 @@ function loadNotes(workspaceRoot: string): MemoryNote[] {
 function saveNotes(workspaceRoot: string, notes: MemoryNote[]): void {
   const filePath = path.join(workspaceRoot, MEMORY_RELATIVE_PATH);
   try {
+    ensureGitignored(workspaceRoot);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(notes, null, 2));
   } catch {

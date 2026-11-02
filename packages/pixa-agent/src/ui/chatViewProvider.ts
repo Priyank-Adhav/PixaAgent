@@ -12,6 +12,7 @@ import { ChangeSet } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
 import { resolveInWorkspace } from "../tools/paths";
+import { ensureGitignored } from "../indexer/vectorStore";
 import { parseMentions, formatAttachedFiles, type AttachedFile } from "../agent/mentions";
 import type { ChatMessage } from "../providers/types";
 import type { ProvidersConfig } from "../providers/config";
@@ -538,6 +539,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     const change = this.changeSet.get(relPath);
     if (!change || change.status !== "pending") return;
     const abs = resolveInWorkspace(this.workspaceRoot, relPath);
+    const dir = path.dirname(abs);
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(dir));
+    } catch {
+      // directory creation failed or already exists
+    }
+
+    const normRel = relPath.replace(/\\/g, "/");
+    if (normRel === ".pixa" || normRel.startsWith(".pixa/")) {
+      ensureGitignored(this.workspaceRoot);
+    }
+
     await vscode.workspace.fs.writeFile(vscode.Uri.file(abs), Buffer.from(change.newContent, "utf8"));
     this.changeSet.markApplied(relPath);
     this.diffPreview.invalidate(relPath);
