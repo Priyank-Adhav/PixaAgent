@@ -14,14 +14,16 @@ This document captures the empirical **Before vs. After comparative evaluation**
 
 Each item presents the exact technical problem, code diff, and empirical evidence comparing the baseline version (`c9d5780`) directly against the verified resolution on `main`.
 
-### Master Remediation & Impact Matrix
+### Master Remediation & Upstream Merge Order Matrix
 
-| ID | PR # | Target Branch | Area / File | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **R-001** | **#1** | `fix/api-400-tool-messages` | `src/agent/contextManager.ts` | **Verified & Merged** |
-| **R-002** | **#8** | `feat/chat-ui-revamp` | `src/ui/webview/style.css`, `src/ui/webview/main.js` | **Verified & Merged** |
-| **R-003** | **#7** | `fix/chat-provider-resilience` | `src/ui/chatViewProvider.ts` | **Verified & Merged** |
-| **R-004** | **#9** | `feat/agent-task-state` | `src/agent/systemPrompt.ts` | **Verified & Merged** |
+To prevent PR number collisions between the local fork (PRs #1, #7, #8, #9) and upstream repository PR numbers, each item is maintained as an isolated feature branch and submitted in strict merge order:
+
+| Upstream Order | ID | Fork PR | Branch Name | Primary Files | Scope & Stability Impact |
+| :---: | :--- | :---: | :--- | :--- | :--- |
+| **1** | **R-001** | **#1** | `fix/api-400-tool-messages` | `src/agent/contextManager.ts` | Eliminates OpenAI/OpenRouter 400 Bad Request by preserving tool-call to tool-result adjacency and injecting synthetic errors for orphaned calls. |
+| **2** | **R-002** | **#8** | `feat/chat-ui-revamp` | `src/ui/webview/style.css`<br>`src/ui/webview/main.js` | Modern dark-mode Chat UI revamp, glassmorphic cards, token count badge, and clean review/reject controls. |
+| **3** | **R-003** | **#7** | `fix/chat-provider-resilience` | `src/ui/chatViewProvider.ts` | Resolves race conditions and state desync in ChatViewProvider during aborts and stream interruptions. |
+| **4** | **R-004** | **#9** | `feat/agent-task-state` | `src/agent/systemPrompt.ts`<br>`src/ui/chatViewProvider.ts` | Long task state management in `.pixa/task-state.md` + automated `.pixa/` `.gitignore` hygiene on first write. |
 
 ---
 
@@ -278,19 +280,22 @@ In `packages/pixa-agent/src/ui/chatViewProvider.ts`:
 
 ---
 
-### 4.2 Technical Solution (PR #9)
+### 4.2 Technical Solution (PR #9 & Follow-up Hygiene Fix)
+
+1. **System Prompt Task State Directive (`systemPrompt.ts`):**
 `systemPrompt.ts` was updated with a mandatory task-state directive instructing the agent to maintain `.pixa/task-state.md` (Goal, Done, Next) and pause at task boundaries:
 
 ```markdown
 # Directive in systemPrompt.ts (PR #9) - RESOLVED
-For complex or multi-step tasks that may exceed your iteration budget:
-1. Maintain an internal task state in `.pixa/task-state.md`.
-2. Track:
-   - ## Goal
-   - ## Done
-   - ## Next
-3. Before hitting execution boundaries, checkpoint your work in `.pixa/task-state.md` and ask the user for permission to proceed with the next phase.
+For complex tasks that take many steps, maintain a `.pixa/task-state.md` file in the workspace to track your progress. The system limits you to 30 tool iterations per run for security reasons. If a task requires more steps, save your checklist and state to this file and ask the user to say "continue" so you can pick up where you left off.
 ```
+
+2. **First-Write Gitignore Auto-Management (`chatViewProvider.ts` & `projectMemory.ts`):**
+To ensure normal agent usage never leaves an untracked `.pixa/` directory in clean repositories (where semantic search is disabled by default per R-009):
+- When writing or applying any file inside `.pixa/` (such as `.pixa/task-state.md` or `.pixa/memory.json`), `ensureGitignored(this.workspaceRoot)` is automatically invoked on first write.
+- The parent directory `.pixa/` is guaranteed to exist before disk writes.
+- Repositories that do not use `.pixa/` remain completely untouched, while workspaces where the agent maintains task state have `.pixa/` cleanly ignored in `.gitignore` without manual user intervention.
+
 
 ---
 
@@ -342,7 +347,19 @@ Build modular math utilities with unit test coverage.
 
 ## 5. Verification & Test Suite Summary
 
-All 4 remediations have been verified both empirically through live VS Code interaction and programmatically via automated testing.
+All 4 remediations have been verified both empirically through live VS Code interaction and programmatically across the entire offline test suite and TypeScript compiler.
+
+### 5.1 Typecheck Verification
+
+```console
+$ npm run typecheck -w pixa-agent
+
+> pixa-agent@0.6.2 typecheck
+> tsc --noEmit
+```
+*Result: Exit code 0, 0 compilation errors across all workspace packages.*
+
+### 5.2 Offline Test Suite Verification
 
 ```console
 $ npm run test:offline -w pixa-agent
@@ -350,12 +367,17 @@ $ npm run test:offline -w pixa-agent
  RUN  v2.1.9 D:/FINAL_YEAR/Btech/PixaAgent/packages/pixa-agent
 
  Test Files  29 passed (29)
-      Tests  300 passed (300)
-   Start at  13:32:23
-   Duration  5.78s
+      Tests  301 passed (301)
+   Duration  14.28s
 ```
+*Result: Exit code 0, 100% green pass rate across 29 test files and 301 test cases.*
 
 ### Contributor Sign-Off
 - **Remediation Author:** Abhinav Mehta  
-- **Pull Requests Merged:** PR #1, PR #7, PR #8, PR #9  
-- **Overall Impact:** Zero orphaned tool errors, clutter-free auto-hiding changeset drawer, 100% transcript rehydration continuity, and structured multi-phase task persistence.
+- **Scope:** Items R-001, R-002, R-003, R-004  
+- **Upstream Merge Order:**
+  1. `fix/api-400-tool-messages` (R-001)
+  2. `feat/chat-ui-revamp` (R-002)
+  3. `fix/chat-provider-resilience` (R-003)
+  4. `feat/agent-task-state` (R-004)
+- **Overall Impact:** Zero orphaned tool errors, clutter-free auto-hiding changeset drawer, 100% transcript rehydration continuity, structured multi-phase task persistence, and clean `.gitignore` hygiene on first write.
