@@ -121,6 +121,26 @@ describe("indexWorkspace (R-010)", () => {
     }
   });
 
+  it("drops a file indexed earlier once its folder becomes a link that points outside (R-013)", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pixa-pipeline-outside-"));
+    try {
+      writeFiles(2);
+      const store = new VectorStore(state.root);
+      await indexWorkspace(state.root, store);
+      expect(await store.isFileIndexed("src/f0.ts")).toBe(true);
+
+      // Swap src/ for a link to a folder outside holding a file of the same name.
+      fs.renameSync(path.join(state.root, "src"), path.join(outside, "src"));
+      fs.symlinkSync(path.join(outside, "src"), path.join(state.root, "src"), process.platform === "win32" ? "junction" : "dir");
+      await indexWorkspace(state.root, store);
+
+      expect(await store.isFileIndexed("src/f0.ts")).toBe(false);
+      expect(readManifest()).not.toHaveProperty("src/f0.ts");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("on cancel, keeps committed work, does not delete unreached files, and resumes incrementally", async () => {
     writeFiles(40);
     const store = new VectorStore(state.root);
