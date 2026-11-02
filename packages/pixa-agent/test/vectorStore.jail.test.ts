@@ -56,6 +56,14 @@ describe("VectorStore workspace jail (R-013)", () => {
     expect(text).not.toContain(SECRET);
   });
 
+  it("readTextForChunk does not follow a directory link that points outside", async () => {
+    // Junctions need no admin rights on Windows.
+    fs.symlinkSync(outer, path.join(workspace, "link-dir"), process.platform === "win32" ? "junction" : "dir");
+    const store = new VectorStore(workspace);
+    const text = await (store as any).readTextForChunk("link-dir/secret.txt", 0, 0);
+    expect(text).toBe("");
+  });
+
   it("crafted entries in an index loaded from disk never reach search results and are purged", async () => {
     fs.writeFileSync(path.join(workspace, "src", "a.ts"), "export const token = 1;\n");
     const chunk = (id: string, filePath: string, text: string) => ({
