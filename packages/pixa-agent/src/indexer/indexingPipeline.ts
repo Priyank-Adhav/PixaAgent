@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { EXCLUDE, MAX_FILES, isIndexablePath } from "./workspaceIndexer";
 import { chunkFile } from "./chunker";
 import type { VectorStore } from "./vectorStore";
-import { resolveInWorkspace } from "../tools/paths";
+import { tryResolveInWorkspace } from "../tools/paths";
 import { redactSecrets } from "../security/redact";
 
 /** Files larger than this are skipped entirely. */
@@ -55,7 +55,8 @@ async function indexOneFile(
   relPath: string,
   vectorStore: VectorStore
 ): Promise<number> {
-  const abs = resolveInWorkspace(workspaceRoot, relPath);
+  const abs = tryResolveInWorkspace(workspaceRoot, relPath);
+  if (!abs) return 0;
 
   let content: string;
   try {
@@ -103,9 +104,17 @@ export async function indexWorkspace(
 
   for (let i = 0; i < relPaths.length; i++) {
     const relPath = relPaths[i];
+
+    // findFiles follows symlinks, so a link pointing outside the workspace
+    // shows up here. Skip it, and leave it unseen so a stale earlier entry is
+    // dropped below, rather than aborting the run.
+    const abs = tryResolveInWorkspace(workspaceRoot, relPath);
+    if (!abs) {
+      onProgress?.(relPath, (i + 1) / relPaths.length);
+      continue;
+    }
     seenPaths.add(relPath);
 
-    const abs = resolveInWorkspace(workspaceRoot, relPath);
     let stat: fs.Stats;
     try {
       stat = fs.statSync(abs);
@@ -185,9 +194,10 @@ export async function indexFile(
     return;
   }
 
-  const abs = resolveInWorkspace(workspaceRoot, relPath);
+  const abs = tryResolveInWorkspace(workspaceRoot, relPath);
   let stat: fs.Stats | null = null;
   try {
+    if (!abs) throw new Error("outside workspace");
     stat = fs.statSync(abs);
   } catch {
     const manifest = loadManifest(workspaceRoot);
