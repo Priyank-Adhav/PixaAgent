@@ -2,6 +2,18 @@
 
 All notable changes to Pixa Agent are documented here.
 
+## [Unreleased]
+
+### Security
+- Workspace path jail (R-013): files outside the open folder could be read
+  through `@file` mentions (`@../secret.txt`), through paths stored in a
+  semantic index that a cloned repo ships in `.pixa/index/`, or through a
+  symlink inside the repo that points outside it. Every file path now goes
+  through the jail, which checks the real location on disk, so these are
+  refused for reads, staged edits, mentions, indexing and a command's working
+  directory. If you link an outside folder into your repo on purpose, Pixa can
+  no longer read or edit through that link.
+
 ## [0.6.2] — 2026-07-28
 
 ### Added
