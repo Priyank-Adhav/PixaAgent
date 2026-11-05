@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
 import type { RepoIndex } from "./types";
-import { resolveInWorkspace } from "../tools/paths";
+import { resolveInWorkspace, tryResolveInWorkspace } from "../tools/paths";
 
 export { isIndexablePath } from "./indexablePaths";
 
@@ -29,7 +29,10 @@ export class WorkspaceIndexer implements RepoIndex {
     const uris = await vscode.workspace.findFiles("**/*", EXCLUDE, MAX_FILES);
     const relPaths = uris
       .map((u) => path.relative(this.workspaceRoot, u.fsPath).split(path.sep).join("/"))
-      .filter((p) => p && !p.startsWith(".."))
+      // findFiles follows symlinks, and this map is sent to the model on every
+      // request, so names behind an outward link must not get in. The jail also
+      // drops hits from other folders of a multi-root window.
+      .filter((p) => p && tryResolveInWorkspace(this.workspaceRoot, p) !== null)
       .sort();
 
     this.mapCache = renderTree(relPaths);
