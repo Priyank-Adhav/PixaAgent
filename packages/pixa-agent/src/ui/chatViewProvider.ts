@@ -12,7 +12,17 @@ import { ChangeSet, checkChangeFreshness } from "../edits/changeSet";
 import type { RepoIndex } from "../indexer/types";
 import { DiffPreview } from "./diffPreview";
 import { resolveInWorkspace, tryResolveInWorkspace } from "../tools/paths";
-import { parseMentions, formatAttachedFiles, type AttachedFile } from "../agent/mentions";
+import {
+  parseMentions,
+  formatAttachedFiles,
+  normalizeMention,
+  isTraversalMention,
+  pickMentionMatch,
+  MAX_AMBIGUOUS_CANDIDATES,
+  type AttachedFile,
+  type AmbiguousMention,
+} from "../agent/mentions";
+import { EXCLUDE } from "../indexer/workspaceIndexer";
 import type { ChatMessage } from "../providers/types";
 import type { ProvidersConfig } from "../providers/config";
 import { validateProviderForm, parseModelsResponse, modelsEndpointUrl } from "../providers/providerForm";
@@ -280,11 +290,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
 
   private transcript(): { role: string; text: string }[] {
     return this.loop.history
-      .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
+      .filter((m) => (m.role === "user" || m.role === "assistant") && (m.content.trim() || (m.toolCalls && m.toolCalls.length > 0)))
       .map((m) => ({
         role: m.role,
-        // Hide bulky attached-file blocks from the replayed view.
-        text: m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]"),
+        text: m.content.trim()
+          ? m.content.replace(/\n*<attached-files>[\s\S]*<\/attached-files>/, " [attached files]")
+          : `*(used ${m.toolCalls?.length} tool${m.toolCalls?.length === 1 ? "" : "s"})*`,
       }));
   }
 
@@ -503,13 +514,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
       if (action === "apply-all") {
         let appliedCount = 0;
         const skipped: string[] = [];
+        let hasError = false;
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") {
-            const res = await this.applyChange(change.path);
-            if (res.applied) {
-              appliedCount++;
-            } else if (res.reason) {
-              skipped.push(change.path);
+            try {
+              const res = await this.applyChange(change.path);
+              if (res.applied) {
+                appliedCount++;
+              } else if (res.reason) {
+                skipped.push(change.path);
+              }
+            } catch (e) {
+              hasError = true;
+              this.post({ type: "error", message: `Error applying ${change.path}: ${(e as Error).message}` } as any);
             }
           }
         }
@@ -517,22 +534,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
           const summary = `Apply all: ${appliedCount} applied, ${skipped.length} skipped as stale (${skipped.join(", ")}).`;
           this.post({ type: "error", message: summary });
           void vscode.window.showWarningMessage(`Pixa: ${summary}`);
-        } else if (appliedCount > 0) {
+        } else if (appliedCount > 0 && !hasError) {
           this.post({ type: "status", text: `Applied all ${appliedCount} pending change(s).` });
         }
       } else if (action === "reject-all") {
         for (const change of this.changeSet.list()) {
           if (change.status === "pending") this.changeSet.markRejected(change.path);
         }
+        this.post({ type: "status", text: "Rejected all pending changes." } as any);
       } else if (relPath) {
         if (action === "apply") {
           const res = await this.applyChange(relPath);
           if (!res.applied && res.reason) {
             this.post({ type: "error", message: `Cannot apply ${relPath} — ${res.reason}. Staged change kept pending.` });
+          } else if (res.applied) {
+            this.post({ type: "status", text: `Applied changes to ${relPath}` } as any);
           }
         }
-        if (action === "reject") this.changeSet.markRejected(relPath);
-        if (action === "revert") await this.revertChange(relPath);
+        if (action === "reject") {
+          this.changeSet.markRejected(relPath);
+          this.post({ type: "status", text: `Rejected changes to ${relPath}` } as any);
+        }
+        if (action === "revert") {
+          await this.revertChange(relPath);
+          this.post({ type: "status", text: `Reverted changes to ${relPath}` } as any);
+        }
       }
       this.postChangeSet();
     } catch (e) {
@@ -585,41 +611,85 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ApprovalSer
     if (mentions.length === 0) return text;
     const attached: AttachedFile[] = [];
     const unresolved: string[] = [];
+    const ambiguous: AmbiguousMention[] = [];
+    // Shown to the user whenever the attached file isn't literally what they typed.
+    const notes: string[] = [];
     for (const mention of mentions) {
       try {
-        // A leading "/" or "./" means workspace-root-relative, as before.
-        const norm = mention.replace(/\\/g, "/").replace(/^(\.?\/)+/, "");
         // Mentions are jailed like every other agent file access (R-013):
         // "@../secret.txt" must never read outside the workspace.
+        if (isTraversalMention(mention)) {
+          unresolved.push(mention);
+          continue;
+        }
+        // A leading "/" or "./" means workspace-root-relative.
+        const norm = normalizeMention(mention);
         const exactPath = tryResolveInWorkspace(this.workspaceRoot, norm);
         if (!exactPath) {
           unresolved.push(mention);
           continue;
         }
         // Exact relative path first, then a suffix match anywhere in the workspace.
-        let uri: vscode.Uri | undefined;
-        const exact = vscode.Uri.file(exactPath);
+        let rel: string | undefined;
         try {
-          await vscode.workspace.fs.stat(exact);
-          uri = exact;
+          await vscode.workspace.fs.stat(vscode.Uri.file(exactPath));
+          rel = norm;
         } catch {
+          const found = await vscode.workspace.findFiles(`**/${norm}`, EXCLUDE, MAX_AMBIGUOUS_CANDIDATES + 1);
           // In a multi-root window findFiles also searches the other folders;
-          // only accept hits inside this workspace root.
-          const found = await vscode.workspace.findFiles(`**/${norm}`, "**/node_modules/**", 10);
-          uri = found.find((u) => tryResolveInWorkspace(this.workspaceRoot, u.fsPath) !== null);
+          // only keep hits inside this workspace root.
+          const candidates = found
+            .filter((u) => tryResolveInWorkspace(this.workspaceRoot, u.fsPath) !== null)
+            .map((u) => path.relative(this.workspaceRoot, u.fsPath).split(path.sep).join("/"));
+          const match = pickMentionMatch(norm, candidates);
+          if (match.kind === "unique") {
+            rel = match.path;
+          } else if (match.kind === "ambiguous") {
+            rel = await this.pickAmbiguousMention(mention, match.candidates, match.truncated);
+            if (!rel) {
+              ambiguous.push({ mention, candidates: match.candidates, truncated: match.truncated });
+              notes.push(`@${mention} matches ${match.candidates.length}${match.truncated ? "+" : ""} files — not attached; the agent will ask which one you meant.`);
+              continue;
+            }
+          }
         }
-        if (!uri) {
+        if (!rel) {
           unresolved.push(mention);
           continue;
         }
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        const rel = path.relative(this.workspaceRoot, uri.fsPath).split(path.sep).join("/");
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(resolveInWorkspace(this.workspaceRoot, rel)));
         attached.push({ path: rel, content: Buffer.from(bytes).toString("utf8") });
+        if (rel !== norm) notes.push(`Attached @${mention} → ${rel}`);
       } catch {
         unresolved.push(mention);
       }
     }
-    return text + formatAttachedFiles(attached, unresolved);
+    for (const note of notes) this.post({ type: "status", text: note });
+    return text + formatAttachedFiles(attached, unresolved, ambiguous);
+  }
+
+  /** Ask the user which duplicate a mention meant. Undefined if dismissed or the run is stopped. */
+  private async pickAmbiguousMention(
+    mention: string,
+    candidates: string[],
+    truncated: boolean
+  ): Promise<string | undefined> {
+    const cts = new vscode.CancellationTokenSource();
+    const onAbort = () => cts.cancel();
+    this.abort?.signal.addEventListener("abort", onAbort);
+    try {
+      return await vscode.window.showQuickPick(
+        candidates,
+        {
+          title: `@${mention} matches ${candidates.length}${truncated ? "+" : ""} files — which one should be attached?`,
+          placeHolder: truncated ? "Only the first matches are listed; type a longer path to narrow it down" : undefined,
+        },
+        cts.token
+      );
+    } finally {
+      this.abort?.signal.removeEventListener("abort", onAbort);
+      cts.dispose();
+    }
   }
 
   private postChangeSet(): void {

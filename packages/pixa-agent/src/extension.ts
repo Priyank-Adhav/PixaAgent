@@ -16,6 +16,7 @@ import { VectorStore, ensureGitignored } from "./indexer/vectorStore";
 import { WorkspaceIndexer } from "./indexer/workspaceIndexer";
 import type { RepoIndex } from "./indexer/types";
 import { indexWorkspaceWithProgress, registerIncrementalIndexing } from "./indexer/indexingPipeline";
+import { formatIndexingMetrics } from "./indexer/indexingMetrics";
 import { runAndSaveBenchmark } from "./indexer/recallBenchmark";
 import { DiffPreview } from "./ui/diffPreview";
 import { ChatViewProvider } from "./ui/chatViewProvider";
@@ -180,17 +181,25 @@ export function activate(context: vscode.ExtensionContext): void {
     index = new EmbeddingIndex(workspaceRoot, vectorStore);
     log("VectorStore constructed — .pixa/index/ should now exist on disk.");
 
-    const runInitialIndex = async () => {
+    /** Resolves true if the index completed, false if it was cancelled or failed. */
+    const runIndexOnce = async (): Promise<boolean> => {
       statusBar.text = "$(sync~spin) Pixa: indexing…";
       statusBar.tooltip = "Pixa is building its semantic search index for this workspace.";
       statusBar.show();
       try {
         const result = await indexWorkspaceWithProgress(workspaceRoot, vectorStore);
-        log(
-          `Initial index complete: ${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written.`
-        );
+        const summary = `${result.filesIndexed} file(s) processed, ${result.filesSkipped} unchanged (skipped), ${result.chunksIndexed} chunk(s) written; ${formatIndexingMetrics(result.metrics)}.`;
+        if (result.cancelled) {
+          log(`Initial index CANCELLED after ${summary} Run "Pixa: Rebuild Semantic Search Index" to resume.`);
+          statusBar.text = "$(debug-pause) Pixa: indexing paused";
+          statusBar.tooltip = "Run \"Pixa: Rebuild Semantic Search Index\" to resume where it stopped.";
+          setTimeout(() => statusBar.hide(), 8000);
+          return false;
+        }
+        log(`Initial index complete: ${summary}`);
         statusBar.text = `$(check) Pixa: index ready (${result.filesIndexed} indexed, ${result.filesSkipped} skipped)`;
         setTimeout(() => statusBar.hide(), 5000);
+        return true;
       } catch (err: any) {
         log(`Initial index FAILED: ${err?.stack ?? err}`);
         // @huggingface/transformers ships unbundled (it's 150MB+ with a native
@@ -209,7 +218,19 @@ export function activate(context: vscode.ExtensionContext): void {
             `Pixa: initial semantic index failed — see "Pixa Index" output channel for details. (${err?.message ?? err})`
           );
         }
+        return false;
       }
+    };
+    // Rebuild pressed while indexing is running joins the current run instead
+    // of starting a second, competing one.
+    let inFlightIndex: Promise<boolean> | null = null;
+    const runInitialIndex = (): Promise<boolean> => {
+      if (!inFlightIndex) {
+        inFlightIndex = runIndexOnce().finally(() => {
+          inFlightIndex = null;
+        });
+      }
+      return inFlightIndex;
     };
     void runInitialIndex();
 
@@ -218,8 +239,9 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
       vscode.commands.registerCommand("pixa.rebuildSemanticIndex", async () => {
         log("Manual rebuild triggered.");
-        await runInitialIndex();
-        void vscode.window.showInformationMessage("Pixa: semantic index rebuilt.");
+        if (await runInitialIndex()) {
+          void vscode.window.showInformationMessage("Pixa: semantic index rebuilt.");
+        }
       }),
       vscode.commands.registerCommand("pixa.runRecallBenchmark", async () => {
         await runAndSaveBenchmark(workspaceRoot, vectorStore);
