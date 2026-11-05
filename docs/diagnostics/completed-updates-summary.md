@@ -191,18 +191,20 @@ This document records completed remediation branches after they are implemented.
   - `CONTRIBUTING.md`, `CHANGELOG.md`
   - `packages/pixa-agent/test/paths.test.ts`, `packages/pixa-agent/test/vectorStore.jail.test.ts`
   - `packages/pixa-agent/test/fs.jail.test.ts` (new), `packages/pixa-agent/test/indexingPipeline.jail.test.ts` (new)
+  - `packages/pixa-agent/src/indexer/workspaceIndexer.ts`, `packages/pixa-agent/test/workspaceIndexer.jail.test.ts` (new)
 - **Summary of fix:**
   - `resolveInWorkspace()` also checks the real path, after links are followed, against the real path of the root. A path that doesn't exist yet is resolved through its deepest existing ancestor. A dangling link is rejected, since a write through it would create its target. Links that stay inside still work, and the returned path is still the lexical one.
   - The root's real path is cached per root; the target is resolved on every call.
+  - `getProjectMap()` filters its list through `tryResolveInWorkspace`. `findFiles` follows links and the map goes into the system prompt on every request, so names behind an outward link were reaching the model provider.
   - The indexer uses `tryResolveInWorkspace`. A file behind an outward link is skipped, and an entry indexed before its folder became such a link is dropped.
   - CONTRIBUTING says the jail covers symlinks. CHANGELOG has an `[Unreleased]` Security entry naming R-013.
 - **Validation performed:**
   - `npm run typecheck -w pixa-agent`.
-  - `npm run test:offline -w pixa-agent`: 258 passing, 2 skipped (246 before, so 12 new tests run). The 2 skips are file-symlink cases that need Developer Mode on Windows; they run on Linux CI.
-  - `npm test -w pixa-agent`: 267 passing, 3 skipped (the earlier skip plus the same 2).
+  - `npm run test:offline -w pixa-agent`: 261 passing, 2 skipped (246 before, so 15 new tests run). The 2 skips are file-symlink cases that need Developer Mode on Windows; they run on Linux CI.
+  - `npm test -w pixa-agent`: 270 passing, 3 skipped (the earlier skip plus the same 2).
   - `npm run compile -w pixa-agent`.
   - Indexing perf on Windows (`PIXA_PERF=1`, 1000 files, measured on `main`): cold 12.6 s → 13.4–13.6 s; warm (nothing changed) 110–124 ms → 257–370 ms; event-loop lag unchanged.
-  - Manual Dev Host validation is not done yet.
+  - Dev Host, 2026-11-05, on this branch with a junction `link-dir` pointing at a folder outside: `get_project_map` no longer lists it, and an index entry made before the fix was dropped on the next run (13 files to 12). Reads, staged edits and mentions through a link were checked on `fix/jail-symlink-realpath` (`48fd91a`), which has the same `paths.ts`.
 - **Remaining follow-up:**
   - Manual check 3: with a junction `ws\link-dir -> ..` (`mklink /J`), `@link-dir/secret.txt`, `read_file link-dir/secret.txt` and creating `link-dir/new.txt` are all refused, and indexing still finishes.
   - When this merges into a `main` that has R-010, `indexingPipeline.ts` conflicts. Keep R-010's code and apply the same three `tryResolveInWorkspace` changes; the `fix/jail-symlink-realpath` branch (local only) has that version, already tested.

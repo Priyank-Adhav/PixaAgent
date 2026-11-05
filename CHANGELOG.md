@@ -10,7 +10,7 @@ All notable changes to Pixa Agent are documented here.
   semantic index that a cloned repo ships in `.pixa/index/`, or through a
   symlink inside the repo that points outside it. Every file path now goes
   through the jail, which checks the real location on disk, so these are
-  refused for reads, staged edits, mentions, indexing and a command's working
+  refused for reads, staged edits, mentions, indexing, the project map and a command's working
   directory. If you link an outside folder into your repo on purpose, Pixa can
   no longer read or edit through that link.
 
