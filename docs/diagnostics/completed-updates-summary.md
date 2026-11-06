@@ -263,4 +263,33 @@ This document records completed remediation branches after they are implemented.
   - Manual check 2: in a scratch repo, add a crafted `.pixa/index/index.json` with a `src/../../secret.txt` entry (create it with the `vectorStore.jail.test.ts` setup). `semantic_search` must not return the secret, and the entry should be gone after the initial index.
   - Rebase R-011 (`fix/ambiguous-file-mentions`) after this merges. Its commit `76f7312` covers the same mention fix; resolve `resolveMentions` to R-011's flow using `tryResolveInWorkspace`, and `git rebase --skip` if that commit becomes empty.
   - R-010 makes `readTextForChunk` async; whichever branch merges second keeps both the async read and the jail.
-  - Out of scope: a symlink inside the workspace that points outside it (an existing gap in `resolveInWorkspace`), and whether a committed `.pixa/index/` should auto-enable semantic search at all. After this fix, such an index can only inject in-repo search results.
+  - Out of scope: whether a committed `.pixa/index/` should auto-enable semantic search at all. After this fix, such an index can only inject in-repo search results.
+
+### Review follow-up: symlinks (C)
+
+- **Target issue:** **(C) Symlinks.** The jail compared path text only, so a symlink or junction inside the repo that points outside was followed. With `docs -> ~/.ssh`, `docs/id_rsa` passed the check. This affected reads, `@`-mentions, indexing and a command's `cwd`, and a staged edit under such a link was written outside the workspace on Apply.
+- **Evidence status:** Confirmed. On the previous branch tip `3df67ed`, the new tests for a file through an outward directory link, a new file under one, and a write under a dangling one all fail. With the jail fixed, the indexer aborted the whole run on such a file, which the new indexer tests also show.
+- **Files changed:**
+  - `packages/pixa-agent/src/tools/paths.ts`
+  - `packages/pixa-agent/src/indexer/indexingPipeline.ts`
+  - `CONTRIBUTING.md`, `CHANGELOG.md`
+  - `packages/pixa-agent/test/paths.test.ts`, `packages/pixa-agent/test/vectorStore.jail.test.ts`
+  - `packages/pixa-agent/test/fs.jail.test.ts` (new), `packages/pixa-agent/test/indexingPipeline.jail.test.ts` (new)
+  - `packages/pixa-agent/src/indexer/workspaceIndexer.ts`, `packages/pixa-agent/test/workspaceIndexer.jail.test.ts` (new)
+- **Summary of fix:**
+  - `resolveInWorkspace()` also checks the real path, after links are followed, against the real path of the root. A path that doesn't exist yet is resolved through its deepest existing ancestor. A dangling link is rejected, since a write through it would create its target. Links that stay inside still work, and the returned path is still the lexical one.
+  - The root's real path is cached per root; the target is resolved on every call.
+  - `getProjectMap()` filters its list through `tryResolveInWorkspace`. `findFiles` follows links and the map goes into the system prompt on every request, so names behind an outward link were reaching the model provider.
+  - The indexer uses `tryResolveInWorkspace`. A file behind an outward link is skipped, and an entry indexed before its folder became such a link is dropped.
+  - CONTRIBUTING says the jail covers symlinks. CHANGELOG has an `[Unreleased]` Security entry naming R-013.
+- **Validation performed:**
+  - `npm run typecheck -w pixa-agent`.
+  - `npm run test:offline -w pixa-agent`: 261 passing, 2 skipped (246 before, so 15 new tests run). The 2 skips are file-symlink cases that need Developer Mode on Windows; they run on Linux CI.
+  - `npm test -w pixa-agent`: 270 passing, 3 skipped (the earlier skip plus the same 2).
+  - `npm run compile -w pixa-agent`.
+  - Indexing perf on Windows (`PIXA_PERF=1`, 1000 files, measured on `main`): cold 12.6 s → 13.4–13.6 s; warm (nothing changed) 110–124 ms → 257–370 ms; event-loop lag unchanged.
+  - Dev Host, 2026-11-05, on this branch with a junction `link-dir` pointing at a folder outside: `get_project_map` no longer lists it, and an index entry made before the fix was dropped on the next run (13 files to 12). Reads, staged edits and mentions through a link were checked on `fix/jail-symlink-realpath` (`48fd91a`), which has the same `paths.ts`.
+- **Remaining follow-up:**
+  - Manual check 3: with a junction `ws\link-dir -> ..` (`mklink /J`), `@link-dir/secret.txt`, `read_file link-dir/secret.txt` and creating `link-dir/new.txt` are all refused, and indexing still finishes.
+  - When this merges into a `main` that has R-010, `indexingPipeline.ts` conflicts. Keep R-010's code and apply the same three `tryResolveInWorkspace` changes; the `fix/jail-symlink-realpath` branch (local only) has that version, already tested.
+  - Known limits: a link swapped in between the check and the open is still followed (needs local code execution), and hard links can't be detected (git can't ship them).

@@ -15,3 +15,6 @@ packages/pixa-agent/README.md
 
 # Internal review/decision docs — working notes for us, not for the public repo
 docs/decisions/
+
+# Local Claude data — generated per workspace, never committed
+.claude/
