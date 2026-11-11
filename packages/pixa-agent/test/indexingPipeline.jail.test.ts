@@ -16,7 +16,7 @@ vi.mock("vscode", async () => {
   const path = await import("node:path");
   const walk = (dir: string, out: { fsPath: string }[]) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === ".pixa") continue;
+      if (entry.name === ".pixa" || entry.name === ".gitignore") continue;
       const p = path.join(dir, entry.name);
       // Like VS Code's findFiles (search.followSymlinks defaults to true).
       const isDir = entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(p).isDirectory());
